@@ -47,3 +47,7 @@ Set `AGENT_CMD` to hand jobs to upstream Hermes. The app passes:
 - `DATABASE_URL`
 
 If the command exits without publishing a page through the MCP/page contract, the job is marked failed. If `AGENT_CMD` is empty, the fallback agent creates a todo and publishes a sanitized generated page for local testing.
+
+## server install handoff
+
+Give [docs/HERMES_SERVER_INSTALL.md](docs/HERMES_SERVER_INSTALL.md) to the Hermes agent or operator installing this on the server that already runs Hermes.

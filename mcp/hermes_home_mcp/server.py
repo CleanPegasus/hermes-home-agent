@@ -669,8 +669,12 @@ def build_mcp() -> Any:
 mcp = build_mcp()
 
 
-if __name__ == "__main__":
+def main() -> None:
     if mcp is None:
         print("FastMCP is not installed; import this module and call tool functions directly.")
     else:
         mcp.run()
+
+
+if __name__ == "__main__":
+    main()
