@@ -1,0 +1,48 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: hermes-home-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-hermes_home}
+      POSTGRES_USER: ${POSTGRES_USER:-hermes}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hermes_dev_password}
+      PGDATA: ${PGDATA:-/var/lib/postgresql/data}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:${PGDATA:-/var/lib/postgresql/data}
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hermes} -d ${POSTGRES_DB:-hermes_home}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  app:
+    image: python:3.14-slim
+    container_name: hermes-home-app
+    restart: unless-stopped
+    working_dir: /workspace/server
+    command:
+      - sh
+      - -lc
+      - python -m pip install -e . "psycopg[binary]>=3.2" && python -m uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8000
+    environment:
+      HOME_API_TOKEN: ${HOME_API_TOKEN:-dev-token}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-hermes}:${POSTGRES_PASSWORD:-hermes_dev_password}@postgres:5432/${POSTGRES_DB:-hermes_home}
+      AGENT_CMD: ${AGENT_CMD:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://127.0.0.1:5173,http://localhost:5173}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      PYTHONUNBUFFERED: "1"
+    ports:
+      - "${SERVER_PORT:-8000}:8000"
+    volumes:
+      - .:/workspace
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+
