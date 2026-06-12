@@ -6,8 +6,10 @@ import shlex
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, time as dt_time, timedelta, timezone
+from pathlib import Path
 
 from sqlalchemy import desc, func, select
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
 from .models import AgentProfile, Approval, CalendarEvent, Job, JobEvent, Page, Tile, utcnow
@@ -177,6 +179,7 @@ def invoke_external_agent(session: Session, job: Job, agent_cmd: str) -> None:
 
 def agent_environment(job: Job, profile: AgentProfile | None = None) -> dict[str, str]:
     env = os.environ.copy()
+    env["DATABASE_URL"] = normalize_agent_database_url(env.get("DATABASE_URL", "sqlite:///./hermes-home.db"))
     env["HERMES_HOME_JOB_ID"] = job.id
     env["HERMES_HOME_COMMAND"] = job.command
     if os.getenv("OBSIDIAN_VAULT_PATH"):
@@ -186,6 +189,19 @@ def agent_environment(job: Job, profile: AgentProfile | None = None) -> dict[str
         env["HERMES_HOME_PROFILE_NAME"] = profile.name
         env["HERMES_HOME_PROFILE_PERSONA"] = profile.persona
     return env
+
+
+def normalize_agent_database_url(database_url: str) -> str:
+    try:
+        url = make_url(database_url)
+    except Exception:
+        return database_url
+    if not url.drivername.startswith("sqlite"):
+        return database_url
+    database = url.database
+    if not database or database == ":memory:" or Path(database).is_absolute():
+        return database_url
+    return url.set(database=str(Path(database).resolve())).render_as_string(hide_password=False)
 
 
 def invoke_fallback_agent(session: Session, job: Job) -> None:
