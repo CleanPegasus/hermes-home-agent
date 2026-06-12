@@ -3,10 +3,10 @@ from __future__ import annotations
 import os
 from collections.abc import Iterator
 
-from sqlalchemy import Engine, create_engine, select
+from sqlalchemy import Engine, create_engine, inspect, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from .models import Base, Category, Tile, utcnow
+from .models import AgentProfile, Base, Category, Tile, utcnow
 
 
 ACCENTS = {
@@ -19,15 +19,18 @@ ACCENTS = {
     "approvals": "#E51400",
     "channels": "#00ABA9",
     "vitals": "#A4C400",
+    "codex": "#647687",
+    "history": "#0050EF",
+    "profiles": "#A20025",
 }
 
 
 SEED_CATEGORIES = [
-    ("work", "work", ACCENTS["jobs"]),
-    ("ideas", "ideas", ACCENTS["memory"]),
+    ("inbox", "inbox", ACCENTS["jobs"]),
     ("home", "home", ACCENTS["todos"]),
-    ("personal", "personal", ACCENTS["notes"]),
+    ("errands", "errands", ACCENTS["calendar"]),
     ("health", "health", ACCENTS["vitals"]),
+    ("reference", "reference", ACCENTS["notes"]),
 ]
 
 
@@ -37,7 +40,7 @@ SEED_TILES = [
         "size": "w",
         "color": ACCENTS["jobs"],
         "sort": 10,
-        "front": {"count": 0, "line": "ready", "sub": "last finished waits here"},
+        "front": {"count": 0, "emoji": "⚙️", "line": "ready", "sub": "last finished waits here"},
         "back": {"line": "last finished", "sub": "nothing yet", "glyph": ">"}
     },
     {
@@ -45,7 +48,7 @@ SEED_TILES = [
         "size": "m",
         "color": ACCENTS["todos"],
         "sort": 20,
-        "front": {"count": 0, "line": "open", "sub": "nothing due"},
+        "front": {"count": 0, "emoji": "✅", "line": "open", "sub": "nothing due"},
         "back": {"line": "last finished", "sub": "nothing yet", "glyph": "check"}
     },
     {
@@ -53,7 +56,7 @@ SEED_TILES = [
         "size": "m",
         "color": ACCENTS["calendar"],
         "sort": 30,
-        "front": {"count": 0, "line": "today", "sub": "no events synced"},
+        "front": {"count": 0, "emoji": "📅", "line": "today", "sub": "no events synced"},
         "back": {"line": "next", "sub": "calendar read path pending", "glyph": "cal"}
     },
     {
@@ -61,15 +64,15 @@ SEED_TILES = [
         "size": "m",
         "color": ACCENTS["notes"],
         "sort": 40,
-        "front": {"count": 0, "line": "filed", "sub": "nothing yet"},
-        "back": {"line": "categories", "sub": "work ideas home", "glyph": "note"}
+        "front": {"count": 0, "emoji": "📝", "line": "filed", "sub": "nothing yet"},
+        "back": {"line": "categories", "sub": "inbox home errands", "glyph": "note"}
     },
     {
         "key": "approvals",
         "size": "s",
         "color": ACCENTS["approvals"],
         "sort": 50,
-        "front": {"count": 0, "line": "appr", "sub": ""},
+        "front": {"count": 0, "emoji": "🛡️", "line": "appr", "sub": ""},
         "back": {"line": "needs", "sub": "none", "glyph": "!"}
     },
     {
@@ -77,8 +80,84 @@ SEED_TILES = [
         "size": "s",
         "color": ACCENTS["spend"],
         "sort": 60,
-        "front": {"count": 0, "line": "spend", "sub": ""},
+        "front": {"count": 0, "emoji": "💸", "line": "spend", "sub": ""},
         "back": {"line": "quiet", "sub": "no tools", "glyph": "$"}
+    },
+    {
+        "key": "channels",
+        "size": "s",
+        "color": ACCENTS["channels"],
+        "sort": 70,
+        "front": {"count": 0, "emoji": "📨", "line": "inbox", "sub": ""},
+        "back": {"line": "quiet", "sub": "no connectors", "glyph": "@"}
+    },
+    {
+        "key": "vitals",
+        "size": "s",
+        "color": ACCENTS["vitals"],
+        "sort": 80,
+        "front": {"count": 0, "emoji": "💓", "line": "ok", "sub": ""},
+        "back": {"line": "system", "sub": "local", "glyph": "pulse"}
+    },
+    {
+        "key": "codex",
+        "size": "s",
+        "color": ACCENTS["codex"],
+        "sort": 90,
+        "front": {"emoji": "🛠️", "glyph": "gear", "line": "codex", "sub": "yolo"},
+        "back": {"line": "web dir", "sub": "feature work", "glyph": ">"}
+    },
+    {
+        "key": "history",
+        "size": "w",
+        "color": ACCENTS["history"],
+        "sort": 95,
+        "front": {"emoji": "🕘", "line": "history", "sub": "recent chats"},
+        "back": {"line": "timeline", "sub": "summaries", "glyph": ">"}
+    },
+    {
+        "key": "profiles",
+        "size": "w",
+        "color": ACCENTS["profiles"],
+        "sort": 85,
+        "front": {"emoji": "🎭", "line": "profiles", "sub": "agent modes"},
+        "back": {"line": "personas", "sub": "choose a voice", "glyph": ">"}
+    },
+]
+
+
+SEED_PROFILES = [
+    {
+        "slug": "personal-assistant",
+        "name": "personal assistant",
+        "emoji": "🪄",
+        "color": "#1BA1E2",
+        "persona": "You are a calm personal assistant for home operations. Prefer concise plans, clear next actions, and safe defaults.",
+        "is_default": True,
+    },
+    {
+        "slug": "research-agent",
+        "name": "research agent",
+        "emoji": "🧠",
+        "color": "#0050EF",
+        "persona": "You are a careful research agent. Gather context, cite sources when available, and summarize findings plainly.",
+        "is_default": False,
+    },
+    {
+        "slug": "coding-agent",
+        "name": "coding agent",
+        "emoji": "💻",
+        "color": "#647687",
+        "persona": "You are a coding agent. Read the repo first, write tests for behavior changes, and keep diffs focused.",
+        "is_default": False,
+    },
+    {
+        "slug": "financial-helper",
+        "name": "financial helper",
+        "emoji": "💰",
+        "color": "#D80073",
+        "persona": "You are a financial helper. Be conservative, separate facts from assumptions, and flag anything that needs review.",
+        "is_default": False,
     },
 ]
 
@@ -99,9 +178,104 @@ def make_session_factory(engine: Engine) -> sessionmaker[Session]:
 
 def init_db(engine: Engine) -> None:
     Base.metadata.create_all(engine)
+    apply_lightweight_migrations(engine)
     factory = make_session_factory(engine)
     with factory() as session:
         seed_database(session)
+
+
+def apply_lightweight_migrations(engine: Engine) -> None:
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+    dialect = engine.dialect.name
+    with engine.begin() as connection:
+        if "pages" in table_names:
+            columns = {column["name"] for column in inspector.get_columns("pages")}
+            if "pinned_at" not in columns:
+                connection.execute(text(f"ALTER TABLE pages ADD COLUMN pinned_at {timestamp_type(dialect)}"))
+            if "provenance" not in columns:
+                connection.execute(text(f"ALTER TABLE pages ADD COLUMN provenance {json_type(dialect)} DEFAULT {empty_json_default(dialect)}"))
+        if "jobs" in table_names:
+            columns = {column["name"] for column in inspector.get_columns("jobs")}
+            if "stdout_tail" not in columns:
+                connection.execute(text("ALTER TABLE jobs ADD COLUMN stdout_tail TEXT"))
+            if "stderr_tail" not in columns:
+                connection.execute(text("ALTER TABLE jobs ADD COLUMN stderr_tail TEXT"))
+            if "exit_code" not in columns:
+                connection.execute(text("ALTER TABLE jobs ADD COLUMN exit_code INTEGER"))
+            if "emoji" not in columns:
+                connection.execute(text("ALTER TABLE jobs ADD COLUMN emoji TEXT"))
+            if "summary" not in columns:
+                connection.execute(text("ALTER TABLE jobs ADD COLUMN summary TEXT"))
+            if "profile_id" not in columns:
+                connection.execute(text("ALTER TABLE jobs ADD COLUMN profile_id TEXT"))
+        if "todos" in table_names:
+            columns = {column["name"] for column in inspector.get_columns("todos")}
+            if "external_id" not in columns:
+                connection.execute(text("ALTER TABLE todos ADD COLUMN external_id TEXT"))
+            if "provider" not in columns:
+                connection.execute(text("ALTER TABLE todos ADD COLUMN provider TEXT NOT NULL DEFAULT 'vikunja'"))
+            if "project_id" not in columns:
+                connection.execute(text("ALTER TABLE todos ADD COLUMN project_id TEXT"))
+            if "project_title" not in columns:
+                connection.execute(text("ALTER TABLE todos ADD COLUMN project_title TEXT"))
+            if "priority" not in columns:
+                connection.execute(text("ALTER TABLE todos ADD COLUMN priority INTEGER"))
+            if "updated_at" not in columns:
+                if dialect.startswith("sqlite"):
+                    # SQLite cannot add a column with a non-constant default such as
+                    # CURRENT_TIMESTAMP. Add it nullable, then backfill existing rows;
+                    # SQLAlchemy still supplies utcnow() for new Todo instances.
+                    connection.execute(text(f"ALTER TABLE todos ADD COLUMN updated_at {timestamp_type(dialect)}"))
+                    connection.execute(text("UPDATE todos SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL"))
+                else:
+                    connection.execute(text(f"ALTER TABLE todos ADD COLUMN updated_at {timestamp_type(dialect)} NOT NULL DEFAULT CURRENT_TIMESTAMP"))
+        if "approvals" in table_names:
+            columns = {column["name"] for column in inspector.get_columns("approvals")}
+            if "decided_at" not in columns:
+                connection.execute(text(f"ALTER TABLE approvals ADD COLUMN decided_at {timestamp_type(dialect)}"))
+            if "result" not in columns:
+                connection.execute(text(f"ALTER TABLE approvals ADD COLUMN result {json_type(dialect)} DEFAULT {empty_json_default(dialect)}"))
+            if "error" not in columns:
+                connection.execute(text("ALTER TABLE approvals ADD COLUMN error TEXT"))
+        if "action_runs" in table_names:
+            columns = {column["name"] for column in inspector.get_columns("action_runs")}
+            if "source_job_id" not in columns:
+                connection.execute(text("ALTER TABLE action_runs ADD COLUMN source_job_id TEXT"))
+            if "source_page_id" not in columns:
+                connection.execute(text("ALTER TABLE action_runs ADD COLUMN source_page_id TEXT"))
+        if "codex_runs" in table_names:
+            columns = {column["name"] for column in inspector.get_columns("codex_runs")}
+            if "effort" not in columns:
+                connection.execute(text("ALTER TABLE codex_runs ADD COLUMN effort TEXT NOT NULL DEFAULT 'xhigh'"))
+            if "process_id" not in columns:
+                connection.execute(text("ALTER TABLE codex_runs ADD COLUMN process_id INTEGER"))
+            if "cancel_requested" not in columns:
+                connection.execute(text(boolean_column_default(dialect, "cancel_requested", False)))
+            if "before_status" not in columns:
+                connection.execute(text("ALTER TABLE codex_runs ADD COLUMN before_status TEXT"))
+            if "after_status" not in columns:
+                connection.execute(text("ALTER TABLE codex_runs ADD COLUMN after_status TEXT"))
+            if "diff_stat" not in columns:
+                connection.execute(text("ALTER TABLE codex_runs ADD COLUMN diff_stat TEXT"))
+
+
+def timestamp_type(dialect: str) -> str:
+    return "TIMESTAMPTZ" if dialect.startswith("postgres") else "DATETIME"
+
+
+def json_type(dialect: str) -> str:
+    return "JSONB" if dialect.startswith("postgres") else "JSON"
+
+
+def empty_json_default(dialect: str) -> str:
+    return "'{}'::jsonb" if dialect.startswith("postgres") else "'{}'"
+
+
+def boolean_column_default(dialect: str, name: str, default: bool) -> str:
+    value = "FALSE" if dialect.startswith("postgres") and not default else "TRUE" if dialect.startswith("postgres") else "0" if not default else "1"
+    column_type = "BOOLEAN" if dialect.startswith("postgres") else "BOOLEAN"
+    return f"ALTER TABLE codex_runs ADD COLUMN {name} {column_type} NOT NULL DEFAULT {value}"
 
 
 def seed_database(session: Session) -> None:
@@ -114,6 +288,11 @@ def seed_database(session: Session) -> None:
         tile = session.get(Tile, tile_data["key"])
         if not tile:
             session.add(Tile(updated_at=utcnow(), **tile_data))
+
+    for profile_data in SEED_PROFILES:
+        exists = session.scalar(select(AgentProfile).where(AgentProfile.slug == profile_data["slug"]))
+        if not exists:
+            session.add(AgentProfile(**profile_data))
     session.commit()
 
 

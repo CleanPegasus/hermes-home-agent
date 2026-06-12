@@ -1,13 +1,34 @@
 import "./styles.css";
 
-import { createApiClient, type ApiClient, type Tile } from "./api";
-import { renderJobsList, renderWorkingScreen, updateStepLog, waitForJob } from "./jobs";
-import { renderNotes } from "./notes";
+import {
+  ApiError,
+  createApiClient,
+  getHomeApiBase,
+  getHomeApiToken,
+  setHomeApiBase,
+  setHomeApiToken,
+  type ActionRunFilters,
+  type ApiClient,
+  type CodexEffort,
+  type Profile,
+  type SessionInfo
+} from "./api";
+import { renderApprovalDetail, renderApprovals } from "./approvals";
+import { renderCodexRunDetail, renderCodexSurface } from "./codex";
+import { renderHistory } from "./history";
+import { renderJobDetail, renderJobsList, renderWorkingScreen, updateStepLog, waitForJob } from "./jobs";
+import { renderNoteDetail, renderNotes } from "./notes";
 import { renderGeneratedPage } from "./pages";
+import { renderProfileEditor, renderProfileFocus, renderProfilesPage } from "./profiles";
+import { renderActionRunDetail, renderCalendarSurface, renderChannelsSurface, renderDiagnosticsBundle, renderSpendSurface, renderVitalsSurface } from "./surfaces";
 import { renderTileGrid } from "./tiles";
 import { renderTodos } from "./todos";
+import { addFact } from "./ui";
 
-const api = createApiClient();
+let api: ApiClient = createApiClient();
+let sessionState: SessionInfo | null = null;
+const COMMAND_SUGGESTIONS = ["add buy oat milk to my todos", "summarize today", "file a note"];
+const PROFILE_STORAGE_KEY = "HERMES_PROFILE_ID";
 const app = document.querySelector<HTMLDivElement>("#app");
 
 if (!app) {
@@ -20,30 +41,141 @@ function setScreen(node: HTMLElement): void {
   rootElement.replaceChildren(node);
 }
 
+function visit(path: string): void {
+  const current = `${window.location.pathname}${window.location.search}`;
+  if (current !== path) {
+    history.pushState({}, "", path);
+  }
+  void renderRoute(path);
+}
+
+async function renderRoute(path = `${window.location.pathname}${window.location.search}`): Promise<void> {
+  const url = new URL(path, window.location.origin);
+  const parts = url.pathname.split("/").filter(Boolean).map((part) => decodeURIComponent(part));
+  if (parts[0] !== "settings") {
+    renderLoading(parts[0] || "start");
+  }
+  try {
+    if (parts.length === 0) {
+      await showStart();
+      return;
+    }
+    if (parts[0] === "tile" && parts[1]) {
+      if (parts[1] === "vitals") {
+        await showVitals(auditFiltersFromParams(url.searchParams));
+        return;
+      }
+      await openTile(parts[1]);
+      return;
+    }
+    if (parts[0] === "history") {
+      await showHistory();
+      return;
+    }
+    if (parts[0] === "profiles") {
+      if (parts[1] === "new") {
+        await showProfileEditor(null);
+      } else {
+        await showProfiles();
+      }
+      return;
+    }
+    if (parts[0] === "profile" && parts[1]) {
+      if (parts[2] === "edit") {
+        await showProfileEditor(parts[1]);
+      } else {
+        await showProfileFocus(parts[1]);
+      }
+      return;
+    }
+    if (parts[0] === "job" && parts[1]) {
+      await showJobDetail(parts[1]);
+      return;
+    }
+    if (parts[0] === "page" && parts[1]) {
+      await showPage(parts[1]);
+      return;
+    }
+    if (parts[0] === "approval" && parts[1]) {
+      await showApprovalDetail(parts[1]);
+      return;
+    }
+    if (parts[0] === "note" && parts[1]) {
+      await showNoteDetail(parts[1]);
+      return;
+    }
+    if (parts[0] === "action" && parts[1]) {
+      await showActionRunDetail(parts[1]);
+      return;
+    }
+    if (parts[0] === "codex" && parts[1]) {
+      await showCodexRun(parts[1]);
+      return;
+    }
+    if (parts[0] === "diagnostics" && parts[1]) {
+      await showDiagnostics(parts[1]);
+      return;
+    }
+    if (parts[0] === "settings") {
+      renderSetup("connection settings");
+      return;
+    }
+    renderNotFound(url.pathname);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 401) {
+      renderSetup(error.message);
+      return;
+    }
+    if (error instanceof ApiError && error.status === 404) {
+      renderNotFound(url.pathname);
+      return;
+    }
+    renderRouteError(error instanceof Error ? error.message : "couldn't load this screen.");
+  }
+}
+
 function shell(title: string, body: HTMLElement): HTMLElement {
   const root = document.createElement("main");
   root.className = "shell";
   const top = document.createElement("div");
   top.className = "panorama-row";
-  top.innerHTML = `<h1>${title}</h1><span class="agent-state">hermes-01-listening</span>`;
+  const agentLabel = sessionState
+    ? `hermes-01-${sessionState.agent.state}${sessionState.agent.configured ? "" : "-fallback"}`
+    : "hermes-01-setup";
+  top.innerHTML = `<h1>${title}</h1><span class="agent-state">${agentLabel}</span>`;
   const nav = document.createElement("nav");
   nav.className = "nav-bar";
-  nav.innerHTML = '<button type="button" data-nav="back" aria-label="back">‹</button><button type="button" data-nav="home" aria-label="start">⊞</button>';
-  nav.querySelector('[data-nav="back"]')?.addEventListener("click", () => history.back());
-  nav.querySelector('[data-nav="home"]')?.addEventListener("click", () => void showStart());
+  nav.innerHTML = '<button type="button" data-nav="back" aria-label="back">‹</button><button type="button" data-nav="home" aria-label="start">⊞</button><button type="button" data-nav="settings" aria-label="settings">⚙</button>';
+  nav.querySelector('[data-nav="back"]')?.addEventListener("click", () => {
+    if (history.length > 1) {
+      history.back();
+    } else {
+      visit("/");
+    }
+  });
+  nav.querySelector('[data-nav="home"]')?.addEventListener("click", () => visit("/"));
+  nav.querySelector('[data-nav="settings"]')?.addEventListener("click", () => visit("/settings"));
   root.append(top, body, nav);
   return root;
 }
 
 async function showStart(): Promise<void> {
+  sessionState = await api.getSession();
   const { tiles } = await api.getTiles();
+  const profileState = await api.getProfiles();
+  const selectedProfileId = selectedProfile(profileState.profiles, profileState.default_id);
   const body = document.createElement("section");
   body.className = "start-screen";
-  body.append(renderTileGrid(tiles, (key) => void openTile(key)));
+  body.append(renderTileGrid(tiles, (key) => visit(`/tile/${encodeURIComponent(key)}`)));
+
+  const activity = await renderRecentActivity();
+  body.append(activity);
+  const pinned = await renderPinnedPages();
+  body.append(pinned);
 
   const chips = document.createElement("div");
   chips.className = "chips";
-  for (const suggestion of ["add buy oat milk to my todos", "summarize today", "file a note"]) {
+  for (const suggestion of COMMAND_SUGGESTIONS) {
     const chip = document.createElement("button");
     chip.type = "button";
     chip.textContent = suggestion;
@@ -63,62 +195,531 @@ async function showStart(): Promise<void> {
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const input = form.querySelector<HTMLInputElement>(".command-input");
+    const button = form.querySelector<HTMLButtonElement>('button[type="submit"]');
     const text = input?.value.trim() || "";
     if (!text) {
       return;
     }
-    await runCommand(text);
+    form.classList.add("is-submitting");
+    input?.setAttribute("disabled", "true");
+    button?.setAttribute("disabled", "true");
+    try {
+      await runCommand(text, selectedProfile(profileState.profiles, profileState.default_id));
+    } catch (error) {
+      renderCommandError(String(error instanceof Error ? error.message : error));
+    } finally {
+      form.classList.remove("is-submitting");
+      input?.removeAttribute("disabled");
+      button?.removeAttribute("disabled");
+    }
   });
 
-  body.append(chips, form);
+  body.append(renderProfilePicker(profileState.profiles, selectedProfileId), chips, form);
   setScreen(shell("start", body));
 }
 
 async function openTile(key: string): Promise<void> {
   if (key === "todos") {
-    const { todos } = await api.getTodos();
-    setScreen(shell("todos", renderTodos(todos)));
+    const todoState = await api.getTodos();
+    setScreen(shell("todos", renderTodos(todoState.todos, {
+      complete: (todoId) => void runTodoAction("todos.complete", todoId),
+      reopen: (todoId) => void runTodoAction("todos.reopen", todoId),
+      drop: (todoId) => void runTodoAction("todos.drop", todoId)
+    }, {
+      configured: todoState.configured,
+      warning: todoState.warning,
+      projects: todoState.projects,
+      labels: todoState.labels
+    })));
     return;
   }
   if (key === "notes") {
-    const { notes } = await api.getNotes();
-    setScreen(shell("notes", renderNotes(notes)));
+    const [{ notes, configured, warning }, { categories }] = await Promise.all([api.getNotes(), api.getCategories()]);
+    setScreen(shell("notes", renderNotes(notes, categories, (noteId) => visit(`/note/${encodeURIComponent(noteId)}`), {
+      configured,
+      warning,
+      onSearch: async (filters) => (await api.getNotes(filters)).notes
+    })));
     return;
   }
   if (key === "jobs") {
     const { jobs } = await api.getJobs();
-    setScreen(shell("jobs", renderJobsList(jobs, (pageId) => void showPage(pageId))));
+    setScreen(shell("jobs", renderJobsList(jobs, (jobId) => visit(`/job/${encodeURIComponent(jobId)}`))));
     return;
   }
-  setScreen(shell(key, renderPlaceholder(key)));
+  if (key === "history") {
+    await showHistory();
+    return;
+  }
+  if (key === "profiles") {
+    await showProfiles();
+    return;
+  }
+  if (key === "approvals") {
+    const { approvals } = await api.getApprovals();
+    setScreen(shell("approvals", renderApprovals(approvals, {
+      approve: (approvalId) => void decideApproval(approvalId, "approve"),
+      reject: (approvalId) => void decideApproval(approvalId, "reject"),
+      openJob: (jobId) => visit(`/job/${encodeURIComponent(jobId)}`),
+      openApproval: (approvalId) => visit(`/approval/${encodeURIComponent(approvalId)}`)
+    })));
+    return;
+  }
+  if (key === "calendar") {
+    setScreen(shell("calendar", renderCalendarSurface(await api.getCalendar(), { sync: () => void syncConnectorsAndReload("calendar") })));
+    return;
+  }
+  if (key === "channels") {
+    setScreen(shell("channels", renderChannelsSurface(await api.getChannels(), { sync: () => void syncConnectorsAndReload("channels") })));
+    return;
+  }
+  if (key === "spend") {
+    setScreen(shell("spend", renderSpendSurface(await api.getSpend(), { sync: () => void syncConnectorsAndReload("spend") })));
+    return;
+  }
+  if (key === "vitals") {
+    await showVitals();
+    return;
+  }
+  if (key === "codex") {
+    await showCodex();
+    return;
+  }
+  setScreen(shell(key, await renderCapabilityStatus(key)));
 }
 
-function renderPlaceholder(key: string): HTMLElement {
+async function renderCapabilityStatus(key: string): Promise<HTMLElement> {
+  const capabilities = await api.getCapabilities();
   const root = document.createElement("section");
-  root.className = "list-screen";
-  root.innerHTML = `<p class="eyebrow">server defined</p><h1>${key}</h1><p class="empty">nothing to show here yet.</p>`;
+  root.className = "list-screen detail-screen";
+  root.innerHTML = `<p class="eyebrow">capability</p><h1>${key}</h1>`;
+  const facts = document.createElement("dl");
+  facts.className = "fact-list";
+  const status = capabilityStatus(key, capabilities.features);
+  addFact(facts, "state", status.state);
+  addFact(facts, "configured", status.configured ? "yes" : "no");
+  addFact(facts, "what hermes can do", status.description);
+  root.append(facts);
   return root;
 }
 
-async function runCommand(text: string): Promise<void> {
+async function runCommand(text: string, profileId?: string | null): Promise<void> {
   const working = renderWorkingScreen(text);
   setScreen(shell("working", working));
-  const { job_id } = await api.sendCommand(text);
-  const job = await waitForJob(api, job_id, (steps) => updateStepLog(working, steps));
+  const status = working.querySelector<HTMLElement>(".working-status");
+  const { job_id } = await api.sendCommand(text, profileId);
+  const job = await waitForJob(api, job_id, (steps) => updateStepLog(working, steps), {
+    onStatus: (message) => {
+      if (status) {
+        status.textContent = message;
+      }
+    }
+  });
   if (job.status === "done" && job.page_id) {
-    await showPage(job.page_id);
+    visit(`/page/${encodeURIComponent(job.page_id)}`);
+    return;
+  }
+  if (job.status === "needs_approval") {
+    visit(`/job/${encodeURIComponent(job.id)}`);
     return;
   }
   const error = document.createElement("section");
   error.className = "list-screen";
-  error.innerHTML = `<p class="eyebrow">jobs</p><h1>didn't finish</h1><p class="empty">${job.error || "the steps it took are in jobs"}</p>`;
+  error.innerHTML = `<p class="eyebrow">jobs</p><h1>didn't finish</h1><p class="empty"></p>`;
+  error.querySelector(".empty")!.textContent = job.error || "the steps it took are in jobs";
   setScreen(shell("failed", error));
+}
+
+function renderCommandError(message: string): void {
+  const error = document.createElement("section");
+  error.className = "list-screen";
+  error.innerHTML = `<p class="eyebrow">chat</p><h1>couldn't send</h1><p class="empty"></p>`;
+  error.querySelector(".empty")!.textContent = message;
+  setScreen(shell("failed", error));
+}
+
+function renderLoading(label: string): void {
+  const root = document.createElement("section");
+  root.className = "list-screen";
+  root.innerHTML = '<p class="eyebrow">loading</p><h1></h1><p class="empty">fetching current state...</p>';
+  root.querySelector("h1")!.textContent = label;
+  setScreen(shell("loading", root));
+}
+
+function renderNotFound(path: string): void {
+  const root = document.createElement("section");
+  root.className = "list-screen";
+  root.innerHTML = '<p class="eyebrow">route</p><h1>not found</h1><p class="empty"></p><div class="page-actions"></div>';
+  root.querySelector(".empty")!.textContent = path;
+  const home = document.createElement("button");
+  home.type = "button";
+  home.className = "page-action";
+  home.textContent = "start";
+  home.addEventListener("click", () => visit("/"));
+  root.querySelector(".page-actions")!.append(home);
+  setScreen(shell("not found", root));
+}
+
+function renderRouteError(message: string): void {
+  const root = document.createElement("section");
+  root.className = "list-screen";
+  root.innerHTML = '<p class="eyebrow">route</p><h1>couldn\'t load</h1><p class="empty"></p><div class="page-actions"></div>';
+  root.querySelector(".empty")!.textContent = message;
+  const retry = document.createElement("button");
+  retry.type = "button";
+  retry.className = "page-action";
+  retry.textContent = "retry";
+  retry.addEventListener("click", () => void renderRoute());
+  root.querySelector(".page-actions")!.append(retry);
+  setScreen(shell("error", root));
 }
 
 async function showPage(pageId: string): Promise<void> {
   const { page } = await api.getPage(pageId);
-  const pageView = renderGeneratedPage(page, api, () => void showStart());
+  const pageView = renderGeneratedPage(page, api, () => visit("/"), (jobId) => visit(`/job/${encodeURIComponent(jobId)}`));
+  pageView.append(renderFollowUpForm("page", `follow up on page ${page.id}: `));
   setScreen(shell("page", pageView));
+}
+
+async function showNoteDetail(noteId: string): Promise<void> {
+  const [{ note }, { categories }, { notes }] = await Promise.all([api.getNote(noteId), api.getCategories(), api.getNotes()]);
+  setScreen(shell("note", renderNoteDetail(note, categories, notes, {
+    save: (targetNoteId, changes) => void saveNote(targetNoteId, changes),
+    archive: (targetNoteId) => void archiveNote(targetNoteId),
+    merge: (targetNoteId, target) => void mergeNote(targetNoteId, target),
+    openJob: (jobId) => visit(`/job/${encodeURIComponent(jobId)}`)
+  })));
+  rootElement.querySelector(".detail-screen")?.append(renderFollowUpForm("note", `use note ${note.id}: `));
+}
+
+async function saveNote(noteId: string, changes: { title: string; body_md: string; category: string; tags: string[] }): Promise<void> {
+  await api.updateNote(noteId, changes);
+  await showNoteDetail(noteId);
+}
+
+async function archiveNote(noteId: string): Promise<void> {
+  await api.archiveNote(noteId);
+  visit("/tile/notes");
+}
+
+async function mergeNote(noteId: string, targetNoteId: string): Promise<void> {
+  const { note } = await api.mergeNote(noteId, targetNoteId);
+  visit(`/note/${encodeURIComponent(note.id)}`);
+}
+
+async function showJobDetail(jobId: string): Promise<void> {
+  const detail = await api.getJobTimeline(jobId);
+  setScreen(shell("job", renderJobDetail(detail, {
+    openPage: (pageId) => visit(`/page/${encodeURIComponent(pageId)}`),
+    retry: (targetJobId) => void retryJob(targetJobId),
+    cancel: (targetJobId) => void cancelJob(targetJobId),
+    diagnostics: (targetJobId) => visit(`/diagnostics/${encodeURIComponent(targetJobId)}`)
+  })));
+  rootElement.querySelector(".detail-screen")?.append(renderFollowUpForm("job", `continue job ${jobId}: `));
+}
+
+async function showDiagnostics(jobId: string): Promise<void> {
+  const diagnostics = await api.getJobDiagnostics(jobId);
+  setScreen(shell("diagnostics", renderDiagnosticsBundle(diagnostics)));
+}
+
+async function showApprovalDetail(approvalId: string): Promise<void> {
+  const { approval, job } = await api.getApproval(approvalId);
+  setScreen(shell("approval", renderApprovalDetail(approval, job, {
+    approve: (targetApprovalId) => void decideApproval(targetApprovalId, "approve"),
+    reject: (targetApprovalId) => void decideApproval(targetApprovalId, "reject"),
+    openJob: (jobId) => visit(`/job/${encodeURIComponent(jobId)}`)
+  })));
+}
+
+async function showActionRunDetail(actionRunId: string): Promise<void> {
+  const { action_run } = await api.getActionRun(actionRunId);
+  setScreen(shell("action", renderActionRunDetail(action_run, {
+    openJob: (jobId) => visit(`/job/${encodeURIComponent(jobId)}`),
+    openPage: (pageId) => visit(`/page/${encodeURIComponent(pageId)}`)
+  })));
+}
+
+async function showCodex(): Promise<void> {
+  const [state, { codex_runs }] = await Promise.all([api.getCodexState(), api.getCodexRuns()]);
+  setScreen(shell("codex", renderCodexSurface(state, codex_runs, {
+    submit: (prompt, effort, confirmDangerousMode) => void submitCodexPrompt(prompt, effort, confirmDangerousMode),
+    openRun: (runId) => visit(`/codex/${encodeURIComponent(runId)}`)
+  })));
+}
+
+async function showHistory(): Promise<void> {
+  const { jobs } = await api.getJobs(200);
+  const body = document.createElement("section");
+  renderHistory(body, jobs, (job) => visit(`/job/${encodeURIComponent(job.id)}`));
+  setScreen(shell("history", body));
+}
+
+async function showProfiles(): Promise<void> {
+  const { profiles, default_id } = await api.getProfiles();
+  setScreen(shell("profiles", renderProfilesPage(profiles, default_id, {
+    openProfile: (profileId) => visit(`/profile/${encodeURIComponent(profileId)}`),
+    createProfile: () => visit("/profiles/new")
+  })));
+}
+
+async function showProfileFocus(profileId: string): Promise<void> {
+  const [{ profiles }, { jobs }] = await Promise.all([api.getProfiles(), api.getJobs(50, profileId)]);
+  const profile = profiles.find((item) => item.id === profileId);
+  if (!profile) {
+    renderNotFound(`/profile/${profileId}`);
+    return;
+  }
+  setScreen(shell("profile", renderProfileFocus(profile, jobs, {
+    runCommand: (text, selectedId) => void runCommand(text, selectedId),
+    editProfile: (selectedId) => visit(`/profile/${encodeURIComponent(selectedId)}/edit`),
+    openJob: (jobId) => visit(`/job/${encodeURIComponent(jobId)}`)
+  })));
+}
+
+async function showProfileEditor(profileId: string | null): Promise<void> {
+  const { profiles } = await api.getProfiles();
+  const profile = profileId ? profiles.find((item) => item.id === profileId) || null : null;
+  setScreen(shell("profile", renderProfileEditor(profile, {
+    save: async (payload) => {
+      const response = profile ? await api.updateProfile(profile.id, payload) : await api.createProfile(payload);
+      localStorage.setItem(PROFILE_STORAGE_KEY, response.profile.id);
+      visit(`/profile/${encodeURIComponent(response.profile.id)}`);
+    },
+    deleteProfile: async () => {
+      if (profile) {
+        await api.deleteProfile(profile.id);
+      }
+      visit("/profiles");
+    }
+  })));
+}
+
+function renderProfilePicker(profiles: Profile[], selectedId: string | null): HTMLElement {
+  const root = document.createElement("div");
+  root.className = "profile-strip";
+  for (const profile of profiles) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "profile-pick";
+    button.dataset.profileId = profile.id;
+    button.style.setProperty("--profile-color", profile.color);
+    button.textContent = profile.emoji;
+    button.title = profile.name;
+    button.classList.toggle("active", profile.id === selectedId);
+    button.addEventListener("click", () => {
+      localStorage.setItem(PROFILE_STORAGE_KEY, profile.id);
+      for (const item of root.querySelectorAll(".profile-pick")) {
+        item.classList.toggle("active", item === button);
+      }
+    });
+    root.append(button);
+  }
+  return root;
+}
+
+function selectedProfile(profiles: Profile[], defaultId: string | null): string | null {
+  const stored = localStorage.getItem(PROFILE_STORAGE_KEY);
+  if (stored && profiles.some((profile) => profile.id === stored)) {
+    return stored;
+  }
+  return defaultId || profiles[0]?.id || null;
+}
+
+async function submitCodexPrompt(prompt: string, effort: CodexEffort, confirmDangerousMode: boolean): Promise<void> {
+  const { codex_run } = await api.createCodexRun(prompt, effort, confirmDangerousMode);
+  visit(`/codex/${encodeURIComponent(codex_run.id)}`);
+}
+
+async function showCodexRun(runId: string): Promise<void> {
+  const { codex_run } = await api.getCodexRun(runId);
+  setScreen(shell("codex", renderCodexRunDetail(codex_run, {
+    refresh: () => void showCodexRun(runId),
+    cancel: (targetRunId) => void cancelCodexRun(targetRunId)
+  })));
+  if (["queued", "running"].includes(codex_run.status)) {
+    window.setTimeout(() => {
+      if (window.location.pathname === `/codex/${runId}`) {
+        void showCodexRun(runId);
+      }
+    }, 2000);
+  }
+}
+
+async function cancelCodexRun(runId: string): Promise<void> {
+  await api.cancelCodexRun(runId);
+  await showCodexRun(runId);
+}
+
+async function showVitals(filters: ActionRunFilters = {}): Promise<void> {
+  const [vitals, actionRuns] = await Promise.all([api.getVitals(), api.getActionRuns(filters)]);
+  setScreen(shell("vitals", renderVitalsSurface(
+    vitals,
+    actionRuns.action_runs,
+    (actionRunId) => visit(`/action/${encodeURIComponent(actionRunId)}`),
+    filters,
+    (nextFilters) => visit(`/tile/vitals${auditFilterQuery(nextFilters)}`)
+  )));
+}
+
+async function syncConnectorsAndReload(tile: "calendar" | "channels" | "spend"): Promise<void> {
+  await api.syncConnectors();
+  await openTile(tile);
+}
+
+async function retryJob(jobId: string): Promise<void> {
+  const { job_id } = await api.retryJob(jobId);
+  visit(`/job/${encodeURIComponent(job_id)}`);
+}
+
+async function cancelJob(jobId: string): Promise<void> {
+  await api.cancelJob(jobId);
+  await showJobDetail(jobId);
+}
+
+async function runTodoAction(action: string, todoId: string): Promise<void> {
+  await api.runAction(action, { todo_id: todoId });
+  await openTile("todos");
+}
+
+async function decideApproval(approvalId: string, decision: "approve" | "reject"): Promise<void> {
+  if (decision === "approve") {
+    await api.approveApproval(approvalId);
+  } else {
+    await api.rejectApproval(approvalId);
+  }
+  visit("/tile/approvals");
+}
+
+async function renderRecentActivity(): Promise<HTMLElement> {
+  const root = document.createElement("section");
+  root.className = "recent-activity";
+  const { jobs } = await api.getJobs();
+  const recent = jobs.slice(0, 3);
+  if (recent.length === 0) {
+    root.innerHTML = '<p class="eyebrow">recent</p><p class="empty">no jobs yet.</p>';
+    return root;
+  }
+  root.innerHTML = '<p class="eyebrow">recent</p>';
+  const list = document.createElement("div");
+  list.className = "compact-list";
+  for (const job of recent) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "activity-row";
+    button.innerHTML = "<span></span><small></small>";
+    button.querySelector("span")!.textContent = job.command;
+    button.querySelector("small")!.textContent = job.status;
+    button.addEventListener("click", () => visit(`/job/${encodeURIComponent(job.id)}`));
+    list.append(button);
+  }
+  root.append(list);
+  return root;
+}
+
+async function renderPinnedPages(): Promise<HTMLElement> {
+  const root = document.createElement("section");
+  root.className = "recent-activity";
+  const { pages } = await api.getPages();
+  const pinned = pages.filter((page) => page.pinned_at).slice(0, 3);
+  if (pinned.length === 0) {
+    return root;
+  }
+  root.innerHTML = '<p class="eyebrow">pinned</p>';
+  const list = document.createElement("div");
+  list.className = "compact-list";
+  for (const page of pinned) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "activity-row";
+    button.innerHTML = "<span></span><small></small>";
+    button.querySelector("span")!.textContent = page.title;
+    button.querySelector("small")!.textContent = "page";
+    button.addEventListener("click", () => visit(`/page/${encodeURIComponent(page.id)}`));
+    list.append(button);
+  }
+  root.append(list);
+  return root;
+}
+
+function capabilityStatus(key: string, features: Record<string, unknown>): { configured: boolean; state: string; description: string } {
+  if (key === "calendar") {
+    return {
+      configured: Boolean(features.calendar_writes),
+      state: "approval gated",
+      description: "calendar writes execute into the local hermes calendar after approval"
+    };
+  }
+  if (key === "vitals") {
+    return {
+      configured: true,
+      state: "available",
+      description: "session, database, auth, action registry, job retry, and job cancel status are exposed"
+    };
+  }
+  if (key === "spend") {
+    return { configured: false, state: "not configured", description: "no spend data source is connected" };
+  }
+  if (key === "channels") {
+    return { configured: false, state: "not configured", description: "no inbound channel connectors are configured" };
+  }
+  return { configured: false, state: "not configured", description: "this surface is not implemented yet" };
+}
+
+function renderSetup(message: string): void {
+  const root = document.createElement("main");
+  root.className = "shell setup-shell";
+  const body = document.createElement("section");
+  body.className = "list-screen setup-screen";
+  body.innerHTML = `
+    <p class="eyebrow">setup</p>
+    <h1>connect</h1>
+    <p class="empty"></p>
+    <form class="setup-form">
+      <label>api base<input name="base" autocomplete="off" placeholder="same origin or http://127.0.0.1:8000"></label>
+      <label>token<input name="token" autocomplete="off" type="password" placeholder="home api token"></label>
+      <button type="submit">save</button>
+    </form>
+    <p class="action-status"></p>
+  `;
+  body.querySelector(".empty")!.textContent = message;
+  const form = body.querySelector<HTMLFormElement>(".setup-form")!;
+  const base = form.elements.namedItem("base") as HTMLInputElement;
+  const token = form.elements.namedItem("token") as HTMLInputElement;
+  base.value = getHomeApiBase();
+  token.value = getHomeApiToken() || "";
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const status = body.querySelector<HTMLElement>(".action-status")!;
+    status.textContent = "checking connection...";
+    setHomeApiBase(base.value);
+    setHomeApiToken(token.value);
+    api = createApiClient();
+    try {
+      sessionState = await api.getSession();
+      visit("/");
+    } catch (error) {
+      status.textContent = error instanceof Error ? error.message : "connection failed";
+    }
+  });
+  root.append(body);
+  setScreen(root);
+}
+
+function renderFollowUpForm(label: string, prefix: string): HTMLElement {
+  const form = document.createElement("form");
+  form.className = "followup-form";
+  form.innerHTML = `<label>${label} follow-up<input name="command" autocomplete="off"></label><button type="submit">send</button>`;
+  const input = form.elements.namedItem("command") as HTMLInputElement;
+  input.value = prefix;
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const text = input.value.trim();
+    if (text) {
+      await runCommand(text);
+    }
+  });
+  return form;
 }
 
 if ("serviceWorker" in navigator) {
@@ -127,9 +728,41 @@ if ("serviceWorker" in navigator) {
   });
 }
 
-showStart().catch((error) => {
-  const root = document.createElement("main");
-  root.className = "shell";
-  root.innerHTML = `<section class="list-screen"><p class="eyebrow">offline</p><h1>didn't load</h1><p class="empty">${String(error.message || error)}</p></section>`;
-  setScreen(root);
+window.addEventListener("popstate", () => {
+  void renderRoute();
 });
+
+function auditFiltersFromParams(params: URLSearchParams): ActionRunFilters {
+  return {
+    action: params.get("action") || undefined,
+    status: params.get("status") || undefined,
+    source_job_id: params.get("source_job_id") || undefined,
+    source_page_id: params.get("source_page_id") || undefined
+  };
+}
+
+function auditFilterQuery(filters: ActionRunFilters): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (value === undefined || value === "") {
+      continue;
+    }
+    params.set(key, String(value));
+  }
+  const text = params.toString();
+  return text ? `?${text}` : "";
+}
+
+async function boot(): Promise<void> {
+  try {
+    await renderRoute();
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 401) {
+      renderSetup("sign in with the site password, or enter the local api token to connect hermes home.");
+      return;
+    }
+    renderSetup(error instanceof Error ? error.message : "couldn't reach hermes home api.");
+  }
+}
+
+void boot();

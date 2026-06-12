@@ -4,6 +4,9 @@ version = "0.1.0"
 description = "MCP tool surface for Hermes Home"
 requires-python = ">=3.12"
 dependencies = [
+  "httpx>=0.28",
+  "nh3>=0.2",
+  "python-frontmatter>=1.1",
   "sqlalchemy>=2.0",
 ]
 
@@ -21,4 +24,3 @@ hermes-home-mcp = "hermes_home_mcp.server:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
-

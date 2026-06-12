@@ -10,7 +10,7 @@ Use this skill whenever Hermes completes a user command in Hermes Home. The dura
 ## Rules
 
 - Do not finish with a conversational answer when a page can be published.
-- Publish exactly one primary page for the job with `publish_page`.
+- Publish exactly one primary page for the job with `pages_publish`.
 - Keep the page self-contained: no scripts, external assets, remote fonts, iframes, or network URLs.
 - Do not use inline event handlers such as `onclick`.
 - Use semantic HTML: `main`, `section`, `h1`, `h2`, `p`, `ul`, `ol`, `table`, `button`.
@@ -48,5 +48,4 @@ Do not invent action names unless the app server already supports them. If an ac
 - Tiles have been refreshed or marked stale.
 - The page has no script or external-load behavior.
 - The page includes action buttons only for supported actions.
-- `publish_page` was called with the active `HERMES_HOME_JOB_ID`.
-
+- `pages_publish` was called with the active `HERMES_HOME_JOB_ID`.
