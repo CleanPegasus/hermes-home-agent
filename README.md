@@ -34,6 +34,69 @@ VITE_API_BASE=http://127.0.0.1:8000 npm run dev -- --host 127.0.0.1 --port 5173
 
 Open `http://127.0.0.1:5173/`.
 
+## Unified HTTP deployment
+
+The VPS deployment runs Postgres, the FastAPI app, the built PWA, and nginx from one Compose file. Nginx serves the web app on port `80` and proxies `/api/` to the app container, so keep `VITE_API_BASE=` empty for same-origin browser requests.
+
+Create production env values:
+
+```bash
+cp deploy/.env.production.example deploy/.env.production
+python3 - <<'PY'
+from pathlib import Path
+import secrets
+
+path = Path("deploy/.env.production")
+text = path.read_text()
+text = text.replace("HOME_API_TOKEN=change-me", f"HOME_API_TOKEN={secrets.token_urlsafe(32)}")
+text = text.replace("POSTGRES_PASSWORD=change-me", f"POSTGRES_PASSWORD={secrets.token_urlsafe(32)}")
+path.write_text(text)
+PY
+```
+
+Edit `deploy/.env.production` for `PUBLIC_BASE_URL`, `CORS_ORIGINS`, Vikunja, Obsidian, and optional `AGENT_CMD`, then start the stack. If `AGENT_CMD` is set, it must point to a command that exists inside the app container; leave it empty for fallback-mode smoke tests.
+
+Create the nginx Basic Auth password file:
+
+```bash
+mkdir -p deploy/nginx deploy/data/obsidian-vault
+read -rp "Nginx username: " NGINX_USER
+read -rsp "Nginx password: " NGINX_PASSWORD
+printf '\n'
+printf '%s:%s\n' "$NGINX_USER" "$(openssl passwd -apr1 "$NGINX_PASSWORD")" > deploy/nginx/.htpasswd
+unset NGINX_PASSWORD
+```
+
+```bash
+docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml up -d --build
+docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml ps
+```
+
+Restart the app and nginx after code or env changes:
+
+```bash
+bin/hermes-home-restart
+```
+
+Inspect logs:
+
+```bash
+docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml logs -f app nginx
+```
+
+Run the deployment self-check:
+
+```bash
+set -a
+. deploy/.env.production
+set +a
+
+bin/hermes-deployment-self-check \
+  --base-url http://127.0.0.1:${HTTP_PORT:-80} \
+  --basic '<nginx-user>:<nginx-password>' \
+  --expect-nginx-injection
+```
+
 ## verification
 
 ```bash

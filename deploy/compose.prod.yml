@@ -1,0 +1,72 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-hermes_home}
+      POSTGRES_USER: ${POSTGRES_USER:-hermes}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      PGDATA: /var/lib/postgresql/data
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ../db/schema.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hermes} -d ${POSTGRES_DB:-hermes_home}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  app:
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
+    restart: unless-stopped
+    environment:
+      HOME_API_TOKEN: ${HOME_API_TOKEN:?HOME_API_TOKEN is required}
+      HERMES_ENV: production
+      HERMES_STRICT_DEPLOYMENT_CHECKS: ${HERMES_STRICT_DEPLOYMENT_CHECKS:-false}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-hermes}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-hermes_home}
+      AGENT_CMD: ${AGENT_CMD:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost,http://127.0.0.1}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      CODEX_ENABLED: ${CODEX_ENABLED:-false}
+      OBSIDIAN_VAULT_PATH: /data/obsidian-vault
+      VIKUNJA_URL: ${VIKUNJA_URL:-}
+      VIKUNJA_TOKEN: ${VIKUNJA_TOKEN:-}
+      VIKUNJA_TOKEN_FILE: ${VIKUNJA_TOKEN_FILE:-}
+      VIKUNJA_DEFAULT_PROJECT_ID: ${VIKUNJA_DEFAULT_PROJECT_ID:-}
+      VIKUNJA_PROJECT_ID: ${VIKUNJA_PROJECT_ID:-}
+      VIKUNJA_TIMEOUT_SECONDS: ${VIKUNJA_TIMEOUT_SECONDS:-10}
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ${OBSIDIAN_VAULT_HOST_PATH:-./data/obsidian-vault}:/data/obsidian-vault
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read()"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  nginx:
+    build:
+      context: ..
+      dockerfile: web/Dockerfile
+    restart: unless-stopped
+    environment:
+      HOME_API_TOKEN: ${HOME_API_TOKEN:?HOME_API_TOKEN is required}
+      NGINX_BASIC_AUTH_REALM: ${NGINX_BASIC_AUTH_REALM:-Hermes Home}
+    ports:
+      - "${HTTP_PORT:-80}:80"
+    volumes:
+      - ${NGINX_HTPASSWD_HOST_PATH:-./nginx/.htpasswd}:/etc/nginx/auth/.htpasswd:ro
+    depends_on:
+      app:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
