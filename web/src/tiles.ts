@@ -1,4 +1,5 @@
 import type { Tile, TileFace } from "./api";
+import { tileIcon } from "./icons";
 
 export type TileShape = "small" | "wide" | "tall" | "large";
 export interface PackedTile {
@@ -123,45 +124,98 @@ function shapeSize(shape: TileShape): [number, number] {
   return [1, 1];
 }
 
-export function renderTileFace(face: TileFace): HTMLDivElement {
+/**
+ * Render a tile face with per-shape layout.
+ * iconName: key used for the tile icon (front faces only on small/wide/tall).
+ * shape: controls which elements and clamping are applied.
+ * isFront: true for the front face, false for the back.
+ */
+export function renderTileFace(
+  face: TileFace,
+  options: { iconName?: string; shape?: TileShape; isFront?: boolean } = {}
+): HTMLDivElement {
+  const { iconName, shape = "small", isFront = true } = options;
   const root = document.createElement("div");
-  const hasMark = face.count !== undefined || Boolean(face.glyph) || Boolean(face.emoji);
-  root.className = hasMark ? "tile-face tile-face-has-mark" : "tile-face tile-face-text-only";
+  root.className = "tile-face";
 
-  if (face.count !== undefined) {
-    const count = document.createElement("div");
-    count.className = "tile-count";
-    count.textContent = String(face.count);
-    root.append(count);
-  } else if (face.glyph) {
-    const glyph = document.createElement("div");
-    glyph.className = "tile-glyph";
-    glyph.textContent = face.glyph;
-    root.append(glyph);
+  if (isFront) {
+    // Front face: icon + count (+ line for large only)
+    if (shape === "large") {
+      // large front: count (big, weight 200) top-left, front.line below it
+      if (face.count !== undefined) {
+        const count = document.createElement("div");
+        count.className = "tile-count";
+        count.textContent = String(face.count);
+        root.append(count);
+      }
+      if (face.line) {
+        const line = document.createElement("div");
+        line.className = "tile-line";
+        line.textContent = face.line;
+        root.append(line);
+      }
+    } else {
+      // small / wide / tall front: icon + count
+      const iconWrap = document.createElement("div");
+      iconWrap.className = "tile-icon";
+      if (iconName) {
+        iconWrap.append(tileIcon(iconName));
+      }
+
+      if (shape === "wide") {
+        // wide front: icon left, count to the right
+        const row = document.createElement("div");
+        row.className = "tile-front-row";
+        row.append(iconWrap);
+        if (face.count !== undefined) {
+          const count = document.createElement("div");
+          count.className = "tile-count";
+          count.textContent = String(face.count);
+          row.append(count);
+        }
+        root.append(row);
+      } else if (shape === "tall") {
+        // tall front: icon top-left, count below
+        root.append(iconWrap);
+        if (face.count !== undefined) {
+          const count = document.createElement("div");
+          count.className = "tile-count";
+          count.textContent = String(face.count);
+          root.append(count);
+        }
+      } else {
+        // small front: centered icon, count top-right badge
+        if (face.count !== undefined) {
+          const count = document.createElement("div");
+          count.className = "tile-count";
+          count.textContent = String(face.count);
+          root.append(count);
+        }
+        root.append(iconWrap);
+      }
+    }
+  } else {
+    // Back face: line + meta (per-shape clamping via CSS)
+    if (face.line) {
+      const line = document.createElement("div");
+      line.className = "tile-line";
+      line.textContent = face.line;
+      root.append(line);
+    }
+    const metaText = face.sub || face.meta || "";
+    if (metaText && shape !== "wide" && shape !== "small") {
+      const meta = document.createElement("div");
+      meta.className = "tile-meta";
+      meta.textContent = metaText;
+      root.append(meta);
+    }
   }
-
-  if (face.emoji) {
-    const emoji = document.createElement("span");
-    emoji.className = "tile-emoji";
-    emoji.textContent = face.emoji;
-    root.append(emoji);
-  }
-
-  const line = document.createElement("div");
-  line.className = "tile-line";
-  line.textContent = face.line || "";
-  root.append(line);
-
-  const meta = document.createElement("div");
-  meta.className = "tile-meta";
-  meta.textContent = face.sub || face.meta || "";
-  root.append(meta);
 
   return root;
 }
 
 function backHasContent(face: TileFace): boolean {
-  return face.count !== undefined || Boolean(face.glyph) || Boolean(face.emoji) || Boolean(face.line) || Boolean(face.sub) || Boolean(face.meta);
+  return face.count !== undefined || Boolean(face.line) || Boolean(face.sub) || Boolean(face.meta);
 }
 
 export function renderTile(tile: Tile, onOpen: (key: string) => void, index = 0, packed?: Pick<PackedTile, "shape" | "col" | "row">): HTMLButtonElement {
@@ -182,23 +236,30 @@ export function renderTile(tile: Tile, onOpen: (key: string) => void, index = 0,
   button.dataset.shape = shape;
   button.addEventListener("click", () => onOpen(tile.key));
 
+  // Watermark: key icon, large, low-opacity, on the button behind tile-inner
+  const watermark = document.createElement("span");
+  watermark.className = "tile-watermark";
+  watermark.setAttribute("aria-hidden", "true");
+  watermark.append(tileIcon(tile.key));
+
   const label = document.createElement("span");
   label.className = "tile-label";
   label.textContent = tile.key;
 
   const inner = document.createElement("span");
   inner.className = "tile-inner";
-  const front = renderTileFace(tile.front);
+  const front = renderTileFace(tile.front, { iconName: tile.key, shape, isFront: true });
   front.classList.add("tile-front");
-  const back = renderTileFace(tile.back);
+  const back = renderTileFace(tile.back, { iconName: tile.key, shape, isFront: false });
   back.classList.add("tile-back");
   inner.append(front, back);
 
-  if (!backHasContent(tile.back)) {
+  // small tiles always static; others static only when back has no real content
+  if (shape === "small" || !backHasContent(tile.back)) {
     button.classList.add("tile-static");
   }
 
-  button.append(inner, label);
+  button.append(watermark, inner, label);
   return button;
 }
 

@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import type { Tile, TileSize } from "./api";
+import { tileIcon } from "./icons";
 import { extractActionButtons } from "./pages";
-import { getTileShape, packTiles, renderTileFace, renderTileGrid } from "./tiles";
+import { getTileShape, packTiles, renderTileFace, renderTile, renderTileGrid } from "./tiles";
 
 function makeTile(key: string, size: TileSize, sort: number): Tile {
   return {
@@ -18,24 +19,65 @@ function makeTile(key: string, size: TileSize, sort: number): Tile {
 
 describe("tile rendering", () => {
   it("renders a tile face count, line, and meta without unsafe html", () => {
-    const face = renderTileFace({
-      count: 3,
-      line: "ready",
-      meta: "<strong>today</strong>"
-    });
+    // Front face: count is rendered
+    const front = renderTileFace(
+      { count: 3 },
+      { iconName: "todos", shape: "tall", isFront: true }
+    );
+    expect(front.className).toContain("tile-face");
+    expect(front.textContent).toContain("3");
 
-    expect(face.className).toContain("tile-face");
-    expect(face.textContent).toContain("3");
-    expect(face.textContent).toContain("ready");
-    expect(face.textContent).toContain("<strong>today</strong>");
-    expect(face.querySelector("strong")).toBeNull();
+    // Back face: line and meta rendered without unsafe html injection
+    const back = renderTileFace(
+      {
+        line: "ready",
+        meta: "<strong>today</strong>"
+      },
+      { shape: "tall", isFront: false }
+    );
+    expect(back.textContent).toContain("ready");
+    expect(back.textContent).toContain("<strong>today</strong>");
+    expect(back.querySelector("strong")).toBeNull();
   });
 
-  it("renders tile face emoji before text", () => {
-    const face = renderTileFace({ emoji: "🛠️", line: "codex" });
+  it("never renders emoji on a tile face", () => {
+    const frontFace = renderTileFace(
+      { emoji: "🛠️", count: 5, line: "codex" },
+      { iconName: "codex", shape: "wide", isFront: true }
+    );
+    // No emoji text node should appear
+    expect(frontFace.textContent).not.toContain("🛠️");
 
-    expect(face.querySelector(".tile-emoji")?.textContent).toBe("🛠️");
-    expect(face.textContent).toContain("codex");
+    const backFace = renderTileFace(
+      { emoji: "🛠️", line: "codex back" },
+      { shape: "wide", isFront: false }
+    );
+    expect(backFace.textContent).not.toContain("🛠️");
+  });
+
+  it("renders an SVG icon for a known tile key", () => {
+    const icon = tileIcon("todos");
+    expect(icon.tagName.toLowerCase()).toBe("svg");
+    expect(icon.getAttribute("aria-hidden")).toBe("true");
+    expect(icon.getAttribute("viewBox")).toBe("0 0 24 24");
+    expect(icon.querySelectorAll("path").length).toBeGreaterThan(0);
+  });
+
+  it("renders a fallback square-outline icon for an unknown key", () => {
+    const icon = tileIcon("unknown-future-key");
+    expect(icon.tagName.toLowerCase()).toBe("svg");
+    // Fallback is a single path (square)
+    expect(icon.querySelectorAll("path").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("small tiles always have tile-static class (never flip)", () => {
+    // Tile with a back that has content: still static because shape is small
+    const tile = makeTile("approvals", "s", 50);
+    // Force key-based shape override to small
+    tile.size = "s";
+    const button = renderTile(tile, () => undefined, 0);
+    expect(button.dataset.shape).toBe("small");
+    expect(button.classList.contains("tile-static")).toBe(true);
   });
 
   it("maps tile sizes and sort slots to metro shapes", () => {
@@ -100,6 +142,14 @@ describe("tile rendering", () => {
     expect(buttons[0].style.gridColumn).toMatch(/span 2/);
     expect(buttons[0].style.gridRow).toMatch(/span 1/);
     expect(buttons.map((button) => button.style.getPropertyValue("--tile-index"))).toEqual(["0", "1", "2"]);
+  });
+
+  it("renders a watermark svg icon on tiles", () => {
+    const tile = makeTile("todos", "s", 10);
+    const button = renderTile(tile, () => undefined, 0);
+    const watermark = button.querySelector(".tile-watermark");
+    expect(watermark).not.toBeNull();
+    expect(watermark?.querySelector("svg")).not.toBeNull();
   });
 });
 

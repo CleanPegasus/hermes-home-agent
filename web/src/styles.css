@@ -99,13 +99,6 @@ small,
 .tile {
   --tile-col-span: 1;
   --tile-row-span: 1;
-  --tile-count-size: 42px;
-  --tile-line-size: 16px;
-  --tile-meta-size: 12px;
-  --tile-face-gap: 4px;
-  --tile-face-pad-top: 12px;
-  --tile-face-pad-x: 12px;
-  --tile-face-pad-bottom: 30px;
   position: relative;
   grid-column: span var(--tile-col-span);
   grid-row: span var(--tile-row-span);
@@ -119,10 +112,17 @@ small,
   text-align: left;
   overflow: hidden;
   transform: scale(1);
+  transition: transform 90ms ease, filter 120ms ease;
 }
 
 .tile:active {
   transform: scale(0.97);
+}
+
+@media (hover: hover) {
+  .tile:hover {
+    filter: brightness(1.07);
+  }
 }
 
 .tile-m {
@@ -148,50 +148,44 @@ small,
 .tile-shape-small {
   --tile-col-span: 1;
   --tile-row-span: 1;
-  --tile-count-size: 23px;
-  --tile-line-size: 11.5px;
-  --tile-meta-size: 10.5px;
-  --tile-face-gap: 2px;
-  --tile-face-pad-top: 8px;
-  --tile-face-pad-x: 8px;
-  --tile-face-pad-bottom: 24px;
 }
 
 .tile-shape-wide {
   --tile-col-span: 2;
   --tile-row-span: 1;
-  --tile-count-size: 34px;
-  --tile-line-size: 15px;
-  --tile-meta-size: 11px;
-  --tile-face-gap: 2px;
-  --tile-face-pad-top: 10px;
-  --tile-face-pad-x: 12px;
-  --tile-face-pad-bottom: 25px;
 }
 
 .tile-shape-tall {
   --tile-col-span: 1;
   --tile-row-span: 2;
-  --tile-count-size: 34px;
-  --tile-line-size: 14px;
-  --tile-meta-size: 11px;
-  --tile-face-pad-top: 10px;
-  --tile-face-pad-x: 9px;
-  --tile-face-pad-bottom: 27px;
 }
 
 .tile-shape-large {
   --tile-col-span: 2;
   --tile-row-span: 2;
-  --tile-count-size: 52px;
-  --tile-line-size: 18px;
-  --tile-meta-size: 12px;
-  --tile-face-gap: 5px;
-  --tile-face-pad-top: 14px;
-  --tile-face-pad-x: 14px;
-  --tile-face-pad-bottom: 32px;
 }
 
+/* ── Watermark ─────────────────────────────────────────────────────────── */
+.tile-watermark {
+  position: absolute;
+  right: -28px;
+  bottom: -28px;
+  width: 120px;
+  height: 120px;
+  color: rgba(255, 255, 255, 0.08);
+  pointer-events: none;
+  z-index: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+}
+
+.tile-watermark svg {
+  width: 120px;
+  height: 120px;
+}
+
+/* ── Flip container ────────────────────────────────────────────────────── */
 .tile-inner {
   position: absolute;
   inset: 0;
@@ -199,18 +193,18 @@ small,
   will-change: transform;
   animation: tile-flip 9s ease-in-out infinite;
   animation-delay: calc(var(--tile-index, 0) * 700ms);
+  z-index: 1;
 }
 
+/* ── Face base ─────────────────────────────────────────────────────────── */
 .tile-face {
   position: absolute;
   inset: 0;
   display: flex;
   flex-direction: column;
   justify-content: flex-start;
-  gap: var(--tile-face-gap);
   min-width: 0;
   min-height: 0;
-  padding: var(--tile-face-pad-top) var(--tile-face-pad-x) var(--tile-face-pad-bottom);
   overflow: hidden;
   -webkit-backface-visibility: hidden;
   backface-visibility: hidden;
@@ -220,48 +214,176 @@ small,
   transform: rotateX(180deg);
 }
 
-.tile-count,
-.tile-glyph {
-  max-width: 100%;
-  overflow: hidden;
-  font-size: var(--tile-count-size);
-  line-height: 0.95;
-  font-weight: 300;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+/* ── Small (1×1) ───────────────────────────────────────────────────────── */
+/* Icon centered, count badge top-right, label bottom-left */
+.tile-shape-small .tile-face {
+  padding: 8px 8px 26px;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
 }
 
-.tile-emoji {
-  display: block;
-  margin-bottom: 4px;
-  font-size: 28px;
+.tile-shape-small .tile-count {
+  position: absolute;
+  top: 6px;
+  right: 7px;
+  font-size: 14px;
+  font-weight: 600;
   line-height: 1;
+  font-variant-numeric: tabular-nums;
 }
 
+.tile-shape-small .tile-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tile-shape-small .tile-icon svg {
+  width: 26px;
+  height: 26px;
+}
+
+.tile-shape-small .tile-label {
+  left: 8px;
+  bottom: 7px;
+  font-size: 10.5px;
+}
+
+/* ── Wide (2×1) ────────────────────────────────────────────────────────── */
+.tile-shape-wide .tile-face {
+  padding: 10px 12px 28px;
+  gap: 0;
+}
+
+/* Front: icon + count in a row */
+.tile-shape-wide .tile-front .tile-front-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.tile-shape-wide .tile-front .tile-icon {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.tile-shape-wide .tile-front .tile-icon svg {
+  width: 26px;
+  height: 26px;
+}
+
+.tile-shape-wide .tile-front .tile-count {
+  font-size: 32px;
+  font-weight: 200;
+  line-height: 0.95;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+/* Back: line (max 2) */
+.tile-shape-wide .tile-back .tile-line {
+  font-size: 15px;
+  -webkit-line-clamp: 2;
+}
+
+/* ── Tall (1×2) ────────────────────────────────────────────────────────── */
+.tile-shape-tall .tile-face {
+  padding: 10px 9px 30px;
+  gap: 4px;
+}
+
+.tile-shape-tall .tile-front .tile-icon {
+  display: flex;
+  align-items: center;
+}
+
+.tile-shape-tall .tile-front .tile-icon svg {
+  width: 26px;
+  height: 26px;
+}
+
+.tile-shape-tall .tile-front .tile-count {
+  font-size: 36px;
+  font-weight: 200;
+  line-height: 0.95;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+/* Back: line (max 4) + meta (1 line) */
+.tile-shape-tall .tile-back .tile-line {
+  font-size: 14px;
+  -webkit-line-clamp: 4;
+}
+
+.tile-shape-tall .tile-back .tile-meta {
+  font-size: 11px;
+  -webkit-line-clamp: 1;
+}
+
+/* ── Large (2×2) ───────────────────────────────────────────────────────── */
+.tile-shape-large .tile-face {
+  padding: 14px 14px 34px;
+  gap: 6px;
+}
+
+.tile-shape-large .tile-front .tile-count {
+  font-size: 52px;
+  font-weight: 200;
+  line-height: 0.95;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+/* Front line (max 2) */
+.tile-shape-large .tile-front .tile-line {
+  font-size: 17px;
+  -webkit-line-clamp: 2;
+}
+
+/* Back line (max 3) + meta (1 line) */
+.tile-shape-large .tile-back .tile-line {
+  font-size: 17px;
+  -webkit-line-clamp: 3;
+}
+
+.tile-shape-large .tile-back .tile-meta {
+  font-size: 12px;
+  -webkit-line-clamp: 1;
+}
+
+/* ── Shared line / meta rules ──────────────────────────────────────────── */
 .tile-line {
   display: -webkit-box;
   margin: 0;
   overflow: hidden;
   min-height: 0;
-  font-size: var(--tile-line-size);
   font-weight: 300;
-  line-height: 1.08;
-  overflow-wrap: anywhere;
+  line-height: 1.15;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
 }
 
 .tile-meta {
   display: -webkit-box;
   overflow: hidden;
   min-height: 0;
-  font-size: var(--tile-meta-size);
+  color: rgba(255, 255, 255, 0.65);
   line-height: 1.15;
-  overflow-wrap: anywhere;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
 }
 
+/* ── Label ─────────────────────────────────────────────────────────────── */
 .tile-label {
   position: absolute;
   left: 12px;
@@ -269,62 +391,31 @@ small,
   z-index: 2;
   max-width: calc(100% - 24px);
   overflow: hidden;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
+  letter-spacing: 0.02em;
   line-height: 1.1;
   text-overflow: ellipsis;
   text-transform: lowercase;
   white-space: nowrap;
+  color: rgba(255, 255, 255, 0.92);
 }
 
-.tile-shape-small .tile-line,
-.tile-shape-wide .tile-line {
-  -webkit-line-clamp: 1;
+/* ── History tiles: icon on front face ─────────────────────────────────── */
+.history-tile .tile-front .tile-icon svg {
+  width: 26px;
+  height: 26px;
 }
 
-.tile-shape-wide .tile-face-has-mark {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  grid-template-rows: auto auto;
-  align-content: start;
-  column-gap: 9px;
-  row-gap: 1px;
-}
-
-.tile-shape-wide .tile-face-has-mark .tile-count,
-.tile-shape-wide .tile-face-has-mark .tile-glyph,
-.tile-shape-wide .tile-face-has-mark .tile-emoji {
-  grid-row: 1 / 3;
-  max-width: 58px;
-}
-
-.tile-shape-wide .tile-face-has-mark .tile-line,
-.tile-shape-wide .tile-face-has-mark .tile-meta {
-  grid-column: 2;
-}
-
-.tile-shape-small .tile-meta {
-  display: none;
-}
-
-.tile-shape-wide .tile-meta {
-  -webkit-line-clamp: 1;
-}
-
-.tile-shape-large .tile-emoji {
-  font-size: 36px;
-}
-
-.tile-shape-tall .tile-line,
-.tile-shape-large .tile-line {
+.history-tile.tile-shape-tall .tile-front .tile-line,
+.history-tile.tile-shape-large .tile-front .tile-line {
+  font-size: 14px;
   -webkit-line-clamp: 3;
 }
 
-.tile-shape-small .tile-label {
-  left: 8px;
-  bottom: 8px;
-  max-width: calc(100% - 16px);
-  font-size: 10.5px;
+.history-tile.tile-shape-wide .tile-front .tile-line {
+  font-size: 13px;
+  -webkit-line-clamp: 1;
 }
 
 .history-screen {

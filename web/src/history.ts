@@ -1,6 +1,7 @@
 import type { Job, Tile, TileSize } from "./api";
+import { tileIcon } from "./icons";
 import { packTiles, renderTileFace, type TileShape } from "./tiles";
-import { emptyState, relativeDate, statusEmoji } from "./ui";
+import { emptyState, relativeDate } from "./ui";
 
 const HISTORY_SHAPES: TileShape[] = ["wide", "small", "small", "tall", "wide", "small"];
 
@@ -50,19 +51,54 @@ function renderHistoryTile(job: Job, packed: ReturnType<typeof packTiles>[number
   button.setAttribute("aria-label", `${job.summary || job.command} · ${job.status} · ${relativeDate(job.started_at || job.finished_at)}`);
   button.addEventListener("click", () => onOpen(job));
 
+  // Watermark: status icon, low-opacity, bottom-right
+  const watermark = document.createElement("span");
+  watermark.className = "tile-watermark";
+  watermark.setAttribute("aria-hidden", "true");
+  watermark.append(tileIcon(job.status));
+
   const inner = document.createElement("span");
   inner.className = "tile-inner";
-  const face = renderTileFace({
-    emoji: job.emoji || statusEmoji(job.status),
-    line: job.summary || job.command,
-    meta: historyMeta(job)
-  });
-  face.classList.add("tile-front");
-  inner.append(face);
+
+  // Front face: status icon + line (command/summary)
+  const frontFace = document.createElement("div");
+  frontFace.className = "tile-face tile-front";
+
+  const iconWrap = document.createElement("div");
+  iconWrap.className = "tile-icon";
+  iconWrap.append(tileIcon(job.status));
+
+  if (packed.shape === "wide") {
+    const row = document.createElement("div");
+    row.className = "tile-front-row";
+    row.append(iconWrap);
+    frontFace.append(row);
+  } else {
+    frontFace.append(iconWrap);
+  }
+
+  const lineText = job.summary || job.command;
+  if (lineText && packed.shape !== "small") {
+    const line = document.createElement("div");
+    line.className = "tile-line";
+    line.textContent = lineText;
+    frontFace.append(line);
+  }
+
+  // Back face: empty (history tiles don't flip)
+  const backFace = renderTileFace({}, { shape: packed.shape, isFront: false });
+  backFace.classList.add("tile-back");
+
+  inner.append(frontFace, backFace);
+
+  // History tiles always static (no back content)
+  button.classList.add("tile-static");
+
   const label = document.createElement("span");
   label.className = "tile-label";
   label.textContent = job.status;
-  button.append(inner, label);
+
+  button.append(watermark, inner, label);
   return button;
 }
 
@@ -111,14 +147,6 @@ function historyTile(job: Job, index: number): Tile {
   };
 }
 
-function historyMeta(job: Job): string {
-  const pieces = [relativeDate(job.started_at || job.finished_at)];
-  if (job.profile) {
-    pieces.push(`${job.profile.emoji} ${job.profile.name}`);
-  }
-  return pieces.join(" · ");
-}
-
 function historyColor(status: Job["status"]): string {
   if (status === "failed") {
     return "#E51400";
@@ -164,3 +192,4 @@ function columnCount(): number {
   }
   return 4;
 }
+
