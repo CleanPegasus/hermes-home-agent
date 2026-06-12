@@ -30,6 +30,10 @@ export function renderWorkingScreen(command: string): HTMLElement {
     <p class="working-command"></p>
     <p class="working-status">starting job...</p>
     <ol class="step-log"></ol>
+    <div class="page-actions working-actions">
+      <button type="button" class="page-action secondary" data-action="background" disabled>run in background</button>
+      <button type="button" class="page-action danger" data-action="cancel" disabled>cancel</button>
+    </div>
   `;
   root.querySelector(".working-command")!.textContent = command.toLowerCase();
   return root;
@@ -53,6 +57,7 @@ type WaitForJobOptions = {
   intervalMs?: number;
   maxAttempts?: number;
   onStatus?: (message: string) => void;
+  signal?: AbortSignal;
 };
 
 export async function waitForJob(
@@ -92,6 +97,10 @@ export async function waitForJob(
   }
 
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    if (options.signal?.aborted) {
+      abortController?.abort();
+      return lastJob || (await api.getJob(jobId)).job;
+    }
     const [jobResponse, eventText] = await Promise.all([
       api.getJob(jobId),
       streamStarted ? Promise.resolve("") : api.getJobEvents(jobId)
@@ -100,7 +109,7 @@ export async function waitForJob(
     if (!streamStarted) {
       onSteps(parseSseSteps(eventText));
     }
-    const elapsedSeconds = Math.max(1, Math.round((Date.now() - startedAt + attempt * intervalMs) / 1000));
+    const elapsedSeconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
     options.onStatus?.(`still working... ${elapsedSeconds}s`);
     if (["done", "failed", "needs_approval", "cancelled"].includes(jobResponse.job.status)) {
       abortController?.abort();

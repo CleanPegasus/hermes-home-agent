@@ -139,7 +139,8 @@ async function renderRoute(path = `${window.location.pathname}${window.location.
   }
 }
 
-function shell(title: string, body: HTMLElement): HTMLElement {
+function shell(title: string, body: HTMLElement, opts?: { commandBar?: boolean }): HTMLElement {
+  const showCommandBar = opts?.commandBar !== false;
   const root = document.createElement("main");
   root.className = "shell";
   const top = document.createElement("div");
@@ -165,11 +166,38 @@ function shell(title: string, body: HTMLElement): HTMLElement {
   });
   nav.querySelector('[data-nav="home"]')?.addEventListener("click", () => visit("/"));
   nav.querySelector('[data-nav="settings"]')?.addEventListener("click", () => visit("/settings"));
-  root.append(top, body, nav);
+  if (showCommandBar) {
+    const globalBar = document.createElement("form");
+    globalBar.className = "command-bar global-command-bar";
+    globalBar.innerHTML = '<input class="command-input" name="command" autocomplete="off" placeholder="tell hermes what to do..." /><button type="submit" aria-label="send">›</button>';
+    globalBar.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const input = globalBar.querySelector<HTMLInputElement>(".command-input");
+      const button = globalBar.querySelector<HTMLButtonElement>('button[type="submit"]');
+      const text = input?.value.trim() || "";
+      if (!text) {
+        return;
+      }
+      globalBar.classList.add("is-submitting");
+      input?.setAttribute("disabled", "true");
+      button?.setAttribute("disabled", "true");
+      try {
+        await runCommand(text, localStorage.getItem(PROFILE_STORAGE_KEY) || null);
+      } finally {
+        globalBar.classList.remove("is-submitting");
+        input?.removeAttribute("disabled");
+        button?.removeAttribute("disabled");
+      }
+    });
+    root.append(top, body, globalBar, nav);
+  } else {
+    root.append(top, body, nav);
+  }
   return root;
 }
 
-async function showStart(): Promise<void> {
+async function showStart(prefillCommand?: string): Promise<void> {
+  history.replaceState({}, "", "/");
   const [session, { tiles }, profileState, activity, pinned] = await Promise.all([
     api.getSession(),
     api.getTiles(),
@@ -217,8 +245,6 @@ async function showStart(): Promise<void> {
     button?.setAttribute("disabled", "true");
     try {
       await runCommand(text, selectedProfile(profileState.profiles, profileState.default_id));
-    } catch (error) {
-      renderCommandError(String(error instanceof Error ? error.message : error));
     } finally {
       form.classList.remove("is-submitting");
       input?.removeAttribute("disabled");
@@ -227,7 +253,16 @@ async function showStart(): Promise<void> {
   });
 
   body.append(renderProfilePicker(profileState.profiles, selectedProfileId), chips, form);
-  setScreen(shell("start", body));
+  setScreen(shell("start", body, { commandBar: false }));
+
+  if (prefillCommand) {
+    const input = body.querySelector<HTMLInputElement>(".command-input");
+    if (input) {
+      input.value = prefillCommand;
+      input.focus();
+      input.setSelectionRange(prefillCommand.length, prefillCommand.length);
+    }
+  }
 }
 
 async function openTile(key: string): Promise<void> {
@@ -318,16 +353,64 @@ async function renderCapabilityStatus(key: string): Promise<HTMLElement> {
 
 async function runCommand(text: string, profileId?: string | null): Promise<void> {
   const working = renderWorkingScreen(text);
-  setScreen(shell("working", working));
+  setScreen(shell("working", working, { commandBar: false }));
   const status = working.querySelector<HTMLElement>(".working-status");
-  const { job_id } = await api.sendCommand(text, profileId);
-  const job = await waitForJob(api, job_id, (steps) => updateStepLog(working, steps), {
-    onStatus: (message) => {
-      if (status) {
-        status.textContent = message;
+  const bgButton = working.querySelector<HTMLButtonElement>('[data-action="background"]');
+  const cancelButton = working.querySelector<HTMLButtonElement>('[data-action="cancel"]');
+
+  let job_id: string;
+  try {
+    ({ job_id } = await api.sendCommand(text, profileId));
+  } catch (error) {
+    toast(error instanceof Error ? error.message : "couldn't send command", "error");
+    await showStart(text);
+    return;
+  }
+
+  const aborter = new AbortController();
+
+  if (bgButton) {
+    bgButton.removeAttribute("disabled");
+    bgButton.addEventListener("click", () => {
+      aborter.abort();
+      toast("still running - check jobs for the result");
+      visit("/");
+    });
+  }
+  if (cancelButton) {
+    cancelButton.removeAttribute("disabled");
+    cancelButton.addEventListener("click", async () => {
+      aborter.abort();
+      try {
+        await api.cancelJob(job_id);
+      } catch (error) {
+        toast(error instanceof Error ? error.message : "couldn't cancel job", "error");
       }
+      visit(`/job/${encodeURIComponent(job_id)}`);
+    });
+  }
+
+  let job;
+  try {
+    job = await waitForJob(api, job_id, (steps) => updateStepLog(working, steps), {
+      signal: aborter.signal,
+      onStatus: (message) => {
+        if (status) {
+          status.textContent = message;
+        }
+      }
+    });
+  } catch (error) {
+    if (aborter.signal.aborted) {
+      return;
     }
-  });
+    throw error;
+  }
+
+  if (aborter.signal.aborted) {
+    return;
+  }
+
   if (job.status === "done" && job.page_id) {
     visit(`/page/${encodeURIComponent(job.page_id)}`);
     return;
@@ -338,16 +421,19 @@ async function runCommand(text: string, profileId?: string | null): Promise<void
   }
   const error = document.createElement("section");
   error.className = "list-screen";
-  error.innerHTML = `<p class="eyebrow">jobs</p><h1>didn't finish</h1><p class="empty"></p>`;
+  error.innerHTML = `<p class="eyebrow">jobs</p><h1>didn't finish</h1><p class="empty"></p><div class="page-actions"></div>`;
   error.querySelector(".empty")!.textContent = job.error || "the steps it took are in jobs";
-  setScreen(shell("failed", error));
-}
-
-function renderCommandError(message: string): void {
-  const error = document.createElement("section");
-  error.className = "list-screen";
-  error.innerHTML = `<p class="eyebrow">chat</p><h1>couldn't send</h1><p class="empty"></p>`;
-  error.querySelector(".empty")!.textContent = message;
+  const openJobBtn = document.createElement("button");
+  openJobBtn.type = "button";
+  openJobBtn.className = "page-action secondary";
+  openJobBtn.textContent = "open job";
+  openJobBtn.addEventListener("click", () => visit(`/job/${encodeURIComponent(job.id)}`));
+  const editCommandBtn = document.createElement("button");
+  editCommandBtn.type = "button";
+  editCommandBtn.className = "page-action secondary";
+  editCommandBtn.textContent = "edit command";
+  editCommandBtn.addEventListener("click", () => void showStart(text));
+  error.querySelector(".page-actions")!.append(openJobBtn, editCommandBtn);
   setScreen(shell("failed", error));
 }
 
