@@ -7,9 +7,11 @@ description: Categorize Hermes Home notes with dedupe and cap rules.
 
 Use this skill when a command stores memory, reference facts, household details, or summaries as notes.
 
+Hermes Home notes are markdown files in the configured Obsidian vault. Categories map to vault folders, and durable labels belong in YAML frontmatter `tags`. Never read or write files outside the vault; use the notes MCP tools so the app, tile counts, and Obsidian files stay aligned.
+
 ## Categories
 
-Prefer existing categories from `list_categories`. The starter taxonomy is:
+Prefer existing categories from `categories_list`. The starter taxonomy is:
 
 - `inbox`: uncertain or needs review.
 - `home`: household facts, supplies, maintenance, appliance details.
@@ -23,7 +25,7 @@ Create a new category only when the note will clearly recur and none of the star
 
 - Normalize title and body before comparing: trim whitespace, lowercase, collapse repeated spaces.
 - Prefer updating context through metadata instead of creating near-duplicates.
-- If `add_note` reports `deduped: true`, do not create another note for the same fact.
+- Search with `notes_search` before writing. If an existing note already captures the fact, update it with `notes_append` instead of creating a duplicate.
 - If two facts are related but independently useful, store separate notes with precise titles.
 
 ## Cap Rules
@@ -34,26 +36,16 @@ Create a new category only when the note will clearly recur and none of the star
 - Keep bodies concise; long source text belongs in a generated page, with only the durable summary saved as a note.
 - Use `inbox` when confidence is low instead of overfitting a category.
 
-## Metadata
+## Tags And Metadata
 
-Useful metadata keys:
+Prefer one to three lowercase tags when they help retrieval later, for example `groceries`, `hvac`, `doctor`, or `warranty`. Reuse obvious existing wording from related notes. Do not invent a broad tag for one isolated note.
 
-```json
-{
-  "confidence": "high",
-  "source_command": "original user command",
-  "entities": ["filter", "hallway"],
-  "expires_at": null
-}
-```
-
-Do not put secrets, tokens, or private credentials in note metadata.
+Do not put secrets, tokens, or private credentials in note bodies, tags, or frontmatter.
 
 ## Completion Checklist
 
-- Categories were read before choosing a category.
+- Categories were read with `categories_list` before choosing a category.
 - Duplicate content was avoided.
-- No more than five notes were created from the command.
+- No more than five notes were created with `notes_create` from the command.
 - The notes tile was refreshed or marked stale.
 - A generated page summarizes what was saved.
-

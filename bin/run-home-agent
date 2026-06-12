@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_HERMES_HOME_ROOT="/opt/hermes-home"
+if [[ -n "${HERMES_HOME_ROOT:-}" ]]; then
+  HERMES_HOME_ROOT="$(cd "$HERMES_HOME_ROOT" && pwd)"
+elif [[ -d "$DEFAULT_HERMES_HOME_ROOT" ]]; then
+  HERMES_HOME_ROOT="$DEFAULT_HERMES_HOME_ROOT"
+else
+  HERMES_HOME_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+fi
+cd "$HERMES_HOME_ROOT"
+
+: "${HERMES_HOME_JOB_ID:?HERMES_HOME_JOB_ID is required}"
+if [[ "${HERMES_HOME_UPDATE_PROFILE_ONLY:-}" != "1" ]]; then
+  : "${HERMES_HOME_COMMAND:?HERMES_HOME_COMMAND is required}"
+fi
+ACTIVE_HERMES_HOME_JOB_ID="$HERMES_HOME_JOB_ID"
+ACTIVE_HERMES_HOME_COMMAND="${HERMES_HOME_COMMAND:-}"
+HERMES_HOME_ENV_FILE="${HERMES_HOME_ENV_FILE:-$HERMES_HOME_ROOT/.env}"
+HERMES_HOME_PROFILE_CONFIG="${HERMES_HOME_PROFILE_CONFIG:-/root/.hermes/profiles/home/config.yaml}"
+HERMES_HOME_PROFILE_PYTHON="${HERMES_HOME_PROFILE_PYTHON:-/usr/local/lib/hermes-agent/venv/bin/python}"
+HERMES_HOME_MCP_COMMAND="${HERMES_HOME_MCP_COMMAND:-$HERMES_HOME_ROOT/.venv-mcp/bin/hermes-home-mcp}"
+
+# Load app settings for DATABASE_URL/HOME_API_TOKEN and stamp the active job id
+# into the home profile MCP server env. Hermes MCP stdio servers are launched
+# from profile config, so this makes the per-job id visible to pages_publish.
+# .env has a blank HERMES_HOME_JOB_ID template; restore the active job after sourcing it.
+set -a
+if [[ -f "$HERMES_HOME_ENV_FILE" ]]; then
+  . "$HERMES_HOME_ENV_FILE"
+fi
+set +a
+export HERMES_HOME_JOB_ID="$ACTIVE_HERMES_HOME_JOB_ID"
+if [[ -n "$ACTIVE_HERMES_HOME_COMMAND" ]]; then
+  export HERMES_HOME_COMMAND="$ACTIVE_HERMES_HOME_COMMAND"
+else
+  unset HERMES_HOME_COMMAND
+fi
+export HERMES_HOME_PROFILE_CONFIG
+export HERMES_HOME_MCP_COMMAND
+
+"$HERMES_HOME_PROFILE_PYTHON" - <<'PY'
+from pathlib import Path
+import os, yaml
+path = Path(os.environ['HERMES_HOME_PROFILE_CONFIG'])
+path.parent.mkdir(parents=True, exist_ok=True)
+data = yaml.safe_load(path.read_text()) if path.exists() else {}
+if data is None:
+    data = {}
+servers = data.setdefault('mcp_servers', {})
+server = servers.setdefault('hermes-home', {})
+server['command'] = os.environ['HERMES_HOME_MCP_COMMAND']
+server['enabled'] = True
+env = server.setdefault('env', {})
+required_keys = ('DATABASE_URL', 'HOME_API_TOKEN', 'HERMES_HOME_JOB_ID')
+optional_keys = (
+    'HERMES_HOME_COMMAND',
+    'VIKUNJA_URL',
+    'VIKUNJA_TOKEN',
+    'VIKUNJA_TOKEN_FILE',
+    'VIKUNJA_DEFAULT_PROJECT_ID',
+    'VIKUNJA_PROJECT_ID',
+    'VIKUNJA_TIMEOUT_SECONDS',
+)
+for key in required_keys:
+    env[key] = os.environ[key]
+for key in optional_keys:
+    value = os.environ.get(key, '').strip()
+    if value:
+        env[key] = value
+    else:
+        env.pop(key, None)
+path.write_text(yaml.safe_dump(data, sort_keys=False))
+PY
+
+if [[ "${HERMES_HOME_UPDATE_PROFILE_ONLY:-}" == "1" ]]; then
+  exit 0
+fi
+
+exec /root/.local/bin/home chat -Q --source hermes-home --skills deliver-as-page,keep-tiles-fresh,categorize-notes -q "Hermes Home job id: ${HERMES_HOME_JOB_ID}. Handle this command using the hermes-home MCP tools. Do not create a second job. Write all state against the active HERMES_HOME_JOB_ID, refresh affected tiles, then call pages_publish before exiting. Command: ${HERMES_HOME_COMMAND}"

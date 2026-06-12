@@ -6,10 +6,12 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
-    "test": "vitest"
+    "test": "vitest",
+    "test:e2e": "playwright test",
+    "playwright:install": "playwright install --with-deps"
   },
-  "dependencies": {},
   "devDependencies": {
+    "@playwright/test": "^1.60.0",
     "@types/node": "^24.0.0",
     "happy-dom": "^17.6.3",
     "typescript": "^5.8.3",

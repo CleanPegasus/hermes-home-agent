@@ -1,16 +1,35 @@
 {
   "name": "hermes home",
   "short_name": "hermes",
+  "id": "/",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
+  "orientation": "portrait",
+  "description": "Local Hermes Home command center for jobs, todos, generated pages, and approvals.",
   "background_color": "#000000",
   "theme_color": "#000000",
+  "categories": ["productivity", "utilities"],
   "icons": [
     {
       "src": "/icon.svg",
       "sizes": "any",
       "type": "image/svg+xml",
-      "purpose": "any"
+      "purpose": "any maskable monochrome"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Todos",
+      "short_name": "todos",
+      "url": "/tile/todos",
+      "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+    },
+    {
+      "name": "Approvals",
+      "short_name": "approvals",
+      "url": "/tile/approvals",
+      "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }]
     }
   ]
 }

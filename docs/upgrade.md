@@ -36,7 +36,7 @@ rollback_plan:
 4. Start a clean local database from `db/schema.sql`.
 5. Run the golden commands below with `AGENT_CMD` pointed at the candidate Hermes command.
 6. Review generated pages for action buttons, sanitization, and usefulness.
-7. Review database rows for todos, notes, tiles, approvals, pages, jobs, and job events.
+7. Review Vikunja tasks plus Hermes cache rows for todos, notes, tiles, approvals, pages, jobs, and job events.
 8. Promote only if the golden command checklist passes.
 
 ## Golden Commands
@@ -52,9 +52,9 @@ schedule dentist checkup next Tuesday at 4pm
 
 Expected results:
 
-- Todo command creates one open todo, refreshes the todos tile, and publishes a page with a `todos.complete` action.
+- Todo command creates one open Vikunja task, refreshes the Hermes todos cache/tile, and publishes a page with a `todos.complete` action.
 - Note command creates one deduped note in the best category, refreshes the notes tile, and publishes a reference page.
-- Summary command does not mutate todos, but publishes a useful page and logs the read steps.
+- Summary command reads Vikunja-backed todos without mutating them, publishes a useful page, and logs the read steps.
 - Calendar write command creates a pending approval instead of writing directly, refreshes the approvals tile, and explains the pending action in the page.
 
 ## Page Review Checklist
@@ -92,4 +92,3 @@ Rollback steps:
 2. Restore the previous skill directory and MCP package.
 3. Restart the app service.
 4. Run the first golden command to confirm job, page, event, and tile behavior.
-

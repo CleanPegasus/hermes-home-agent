@@ -4,7 +4,7 @@ This document is written for the Hermes agent or operator installing Hermes Home
 
 ## Goal
 
-Install Hermes Home beside the existing Hermes agent so a phone/PWA can send commands to the app server, Hermes can use the `hermes-home-mcp` tools, and every job ends as a generated HTML page instead of a chat reply.
+Install Hermes Home beside the existing Hermes agent so a phone/PWA can send commands to the app server, Hermes can use the `hermes-home-mcp` tools, todos are managed in Vikunja, and every job ends as a generated HTML page instead of a chat reply.
 
 The required v1 smoke test is:
 
@@ -18,6 +18,7 @@ The required v1 smoke test is:
 ## Assumptions
 
 - Server already has Hermes installed and able to run a named or dedicated `home` profile.
+- Server has a Vikunja instance and an API token with task read/write access.
 - Server has Docker Compose.
 - Server has Python 3.12+ and Node 20+ available on the host.
 - Server is reachable over a private network or tailnet. Do not expose this app publicly without adding the deployment's normal auth, TLS, and firewall controls.
@@ -65,11 +66,23 @@ PY
 Edit `.env` and set:
 
 ```dotenv
+HERMES_ENV=production
 CORS_ORIGINS=http://127.0.0.1:5173,http://localhost:5173,https://<tailnet-hostname>
 PUBLIC_BASE_URL=https://<tailnet-hostname>
+VITE_API_BASE=
+VIKUNJA_URL=https://<vikunja-host>
+VIKUNJA_TOKEN=<api-token>
+VIKUNJA_DEFAULT_PROJECT_ID=<project-id>
+OBSIDIAN_VAULT_PATH=/opt/hermes-home/obsidian-vault
 SERVER_PORT=8000
 POSTGRES_PORT=5432
+CODEX_ENABLED=false
+HERMES_STRICT_DEPLOYMENT_CHECKS=true
 ```
+
+Create the Vikunja API token in Vikunja under Settings > API Tokens. Give it task read/write access for the project Hermes should use for natural-language todo capture. Do not commit the token; keep it only in the deployed `.env`.
+
+Set `OBSIDIAN_VAULT_PATH` to the vault folder that the server can read and write. Hermes Home stores notes as markdown files with YAML frontmatter in that folder; sync the folder externally with Obsidian Sync, Syncthing, iCloud, or your existing vault sync path.
 
 Start Postgres and the app server:
 
@@ -93,6 +106,27 @@ curl -fsS \
 
 Expected: JSON with seeded `jobs`, `todos`, `calendar`, `notes`, `approvals`, and `spend` tiles.
 
+If this server already has legacy notes in the database, export them into the vault once:
+
+```bash
+cd /opt/hermes-home/server
+set -a
+. ../.env
+set +a
+uv run python -m app.migrate_notes
+uv run python -m app.migrate_notes
+```
+
+Expected: the first run reports migrated rows, and the second run reports `migrated=0` with skipped rows. The command never deletes database notes.
+
+Run the deployment self-check:
+
+```bash
+bin/hermes-deployment-self-check --base-url http://127.0.0.1:${SERVER_PORT:-8000} --token "$HOME_API_TOKEN"
+```
+
+Expected: `ok: True` and no `fail` rows. This checks non-default API token state, Codex production gating, database kind, agent configuration, connector setup, and whether the upstream app receives a bearer `Authorization` header.
+
 ## Build And Serve The Web App
 
 Build the PWA:
@@ -100,8 +134,10 @@ Build the PWA:
 ```bash
 cd /opt/hermes-home/web
 npm ci
-VITE_API_BASE="${PUBLIC_BASE_URL:-http://127.0.0.1:8000}" npm run build
+VITE_API_BASE= npm run build
 ```
+
+Leaving `VITE_API_BASE` empty makes the browser call `/api/...` on the same origin that served the app. Use this for nginx deployments that inject the upstream bearer token. Only set `VITE_API_BASE` for separate-origin local development.
 
 Serve `web/dist` with the server's existing static-site mechanism. The simplest tailnet-only option is Caddy or nginx on localhost, then `tailscale serve` in front of it.
 
@@ -119,6 +155,48 @@ server {
     }
 }
 ```
+
+For a public same-origin nginx deployment, protect the whole site with HTTP Basic Auth and proxy `/api/` to the app server. Keep the real bearer token outside the repo and template it into the deployed nginx config:
+
+```nginx
+server {
+    listen 80;
+    server_name <public-host-or-ip>;
+    root /opt/hermes-home/web/dist;
+    index index.html;
+
+    auth_basic "Hermes Home";
+    auth_basic_user_file /etc/nginx/.hermes-home.htpasswd;
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:8001;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Authorization "Bearer <HOME_API_TOKEN>";
+        proxy_buffering off;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+```
+
+Do not add a trailing slash to the `proxy_pass` URL in the `/api/` location; the FastAPI app expects the `/api/...` prefix. Browser users should only enter the Basic Auth username and password. They should not enter `HOME_API_TOKEN` into the app.
+
+After nginx is loaded, test the same-origin token injection path without sending the bearer token from the client:
+
+```bash
+bin/hermes-deployment-self-check \
+  --base-url http://<public-host-or-ip> \
+  --basic '<basic-user>:<basic-password>' \
+  --expect-nginx-injection
+```
+
+If this returns `401` or reports `request_authorization` as a warning, nginx is not overwriting the browser's Basic `Authorization` header with `Bearer <HOME_API_TOKEN>` before proxying to FastAPI.
 
 If using Tailscale:
 
@@ -162,7 +240,8 @@ Register this stdio server in the Hermes `home` profile. The exact config file d
       "command": "/opt/hermes-home/.venv-mcp/bin/hermes-home-mcp",
       "env": {
         "DATABASE_URL": "postgresql+psycopg://hermes:<password>@127.0.0.1:5432/hermes_home",
-        "HOME_API_TOKEN": "<same token as app server>"
+        "HOME_API_TOKEN": "<same token as app server>",
+        "OBSIDIAN_VAULT_PATH": "/opt/hermes-home/obsidian-vault"
       }
     }
   }
@@ -200,6 +279,7 @@ The app server provides these env vars to the command:
 - `HERMES_HOME_COMMAND`: user command text.
 - `DATABASE_URL`: app database URL.
 - `HOME_API_TOKEN`: API bearer token.
+- `OBSIDIAN_VAULT_PATH`: Obsidian vault folder for markdown-backed notes.
 
 Example shape:
 
@@ -218,6 +298,8 @@ cd /opt/hermes-home
 docker compose up -d app
 docker compose logs --tail=100 app
 ```
+
+Queued or running jobs found during app startup are marked failed with a recovery event. That prevents stuck rows after restart, but it is not a durable worker queue; long-running external job ownership should move to a persistent queue before multi-worker deployment.
 
 ## End-To-End Smoke Test
 
@@ -252,9 +334,9 @@ Expected:
 - The job has a `page_id`.
 - `job_events` includes short step logs.
 - A page exists and contains no script tags.
-- One todo is open.
-- The todos tile count is `1`.
-- Clicking the generated page's `mark done` action marks the todo done and returns the todos tile count to `0`.
+- One Vikunja-backed todo is open and includes `provider: "vikunja"` plus an `external_id`.
+- The todos tile count is `1` from the refreshed Vikunja cache.
+- Clicking the generated page's `mark done` action marks the Vikunja task done and returns the todos tile count to `0`.
 
 ## Failure Modes
 
@@ -264,6 +346,12 @@ If the job fails with `agent exited without publishing a page`:
 - Confirm the `deliver-as-page` skill is installed and active.
 - Confirm the `hermes-home` MCP server is registered in the `home` profile.
 - Confirm the MCP server receives the same `DATABASE_URL` as the app server.
+
+If todo routes or commands return a Vikunja configuration error:
+
+- Confirm `VIKUNJA_URL` points to the Vikunja instance root or `/api/v1`.
+- Confirm `VIKUNJA_TOKEN` is set and has task read/write permissions.
+- Confirm `VIKUNJA_DEFAULT_PROJECT_ID` or `VIKUNJA_PROJECT_ID` is set for todo creation.
 
 If the app server cannot connect to Postgres:
 
@@ -275,9 +363,10 @@ docker compose exec postgres pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
 
 If the PWA loads but API calls fail:
 
-- Confirm `VITE_API_BASE` was set before `npm run build`.
-- Confirm `CORS_ORIGINS` includes the PWA origin.
-- Confirm the browser has the correct token in localStorage key `HOME_API_TOKEN`.
+- For same-origin nginx, confirm the web app was rebuilt with `VITE_API_BASE=` so requests go to `/api/...` on the public origin.
+- Confirm nginx applies `auth_basic` to `/api/` and sets `Authorization: Bearer <HOME_API_TOKEN>` only when proxying upstream.
+- Confirm `curl -u '<user>:<password>' http://<public-host-or-ip>/api/session` returns JSON.
+- For separate-origin local development, confirm `VITE_API_BASE` was set before `npm run build`, `CORS_ORIGINS` includes the PWA origin, and the browser has the correct token in localStorage key `HOME_API_TOKEN`.
 
 If action buttons do nothing:
 
@@ -298,7 +387,7 @@ git checkout <last-known-good-ref>
 docker compose up -d app
 cd web
 npm ci
-VITE_API_BASE="${PUBLIC_BASE_URL:-http://127.0.0.1:8000}" npm run build
+VITE_API_BASE= npm run build
 ```
 
 Then rerun the end-to-end smoke test.
