@@ -270,6 +270,52 @@ def test_run_home_agent_syncs_vikunja_env_to_mcp_profile(tmp_path: Path) -> None
     assert "VIKUNJA_TOKEN_FILE" not in mcp_env
 
 
+def test_run_home_agent_preserves_active_app_env_over_env_file(tmp_path: Path) -> None:
+    yaml = pytest.importorskip("yaml")
+    env_file = tmp_path / ".env"
+    profile_config = tmp_path / "profile" / "config.yaml"
+    env_file.write_text(
+        "\n".join(
+            [
+                "HOME_API_TOKEN=stale-token",
+                f"DATABASE_URL=sqlite:///{tmp_path / 'stale.db'}",
+                "HERMES_HOME_JOB_ID=",
+                "HERMES_HOME_COMMAND=",
+            ]
+        )
+        + "\n"
+    )
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "DATABASE_URL": f"sqlite:///{tmp_path / 'active.db'}",
+            "HOME_API_TOKEN": "active-token",
+            "HERMES_HOME_COMMAND": "add active env to my todos",
+            "HERMES_HOME_JOB_ID": "active-job-123",
+            "HERMES_HOME_ENV_FILE": str(env_file),
+            "HERMES_HOME_PROFILE_CONFIG": str(profile_config),
+            "HERMES_HOME_PROFILE_PYTHON": sys.executable,
+            "HERMES_HOME_UPDATE_PROFILE_ONLY": "1",
+        }
+    )
+
+    subprocess.run(
+        [str(Path(__file__).resolve().parents[2] / "bin" / "run-home-agent")],
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    data = yaml.safe_load(profile_config.read_text())
+    mcp_env = data["mcp_servers"]["hermes-home"]["env"]
+    assert mcp_env["DATABASE_URL"] == f"sqlite:///{tmp_path / 'active.db'}"
+    assert mcp_env["HOME_API_TOKEN"] == "active-token"
+    assert mcp_env["HERMES_HOME_JOB_ID"] == "active-job-123"
+    assert mcp_env["HERMES_HOME_COMMAND"] == "add active env to my todos"
+
+
 def test_vikunja_config_accepts_token_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     token_file = tmp_path / "vikunja.token"
     token_file.write_text("file-token\n")
@@ -578,6 +624,19 @@ def test_agent_environment_includes_profile_vars(monkeypatch: pytest.MonkeyPatch
     assert env["OBSIDIAN_VAULT_PATH"] == "/srv/hermes/vault"
 
 
+def test_agent_environment_absolutizes_relative_sqlite_database_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.jobs import agent_environment
+    from app.models import Job
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///./hermes-home-dev.db")
+    job = Job(id="job-1", command="write code", status="queued")
+
+    env = agent_environment(job)
+
+    assert env["DATABASE_URL"] == f"sqlite:///{tmp_path / 'hermes-home-dev.db'}"
+
+
 @pytest.mark.anyio
 async def test_profile_crud_default_and_job_filter(tmp_path: Path) -> None:
     async with build_client(tmp_path) as client:
@@ -643,6 +702,38 @@ async def test_command_returns_before_slow_external_agent_finishes(tmp_path: Pat
         job = await wait_for_job(client, command_response.json()["job_id"], attempts=40)
         assert job["status"] == "failed"
         assert "no page published" in job["error"]
+
+
+@pytest.mark.anyio
+async def test_external_agent_can_publish_page_after_parent_polling_starts(tmp_path: Path) -> None:
+    fake_agent = tmp_path / "fake-publishing-agent.py"
+    fake_agent.write_text(
+        "\n".join(
+            [
+                "import asyncio",
+                "import sys",
+                "import time",
+                f"sys.path.insert(0, {str(Path(__file__).resolve().parents[2] / 'mcp')!r})",
+                "from hermes_home_mcp.server import pages_publish",
+                "time.sleep(0.7)",
+                "asyncio.run(pages_publish('published externally', '<p>done</p>'))",
+                "time.sleep(0.7)",
+            ]
+        )
+        + "\n"
+    )
+
+    async with build_client(tmp_path, agent_cmd=f"{sys.executable} {fake_agent}") as client:
+        command_response = await client.post(
+            "/api/command",
+            headers=auth_headers(),
+            json={"text": "publish a page externally"},
+        )
+
+        assert command_response.status_code == 200
+        job = await wait_for_job(client, command_response.json()["job_id"], attempts=30)
+        assert job["status"] == "done"
+        assert job["page_id"] is not None
 
 
 @pytest.mark.anyio
