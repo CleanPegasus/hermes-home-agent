@@ -52,8 +52,11 @@ function visit(path: string): void {
 async function renderRoute(path = `${window.location.pathname}${window.location.search}`): Promise<void> {
   const url = new URL(path, window.location.origin);
   const parts = url.pathname.split("/").filter(Boolean).map((part) => decodeURIComponent(part));
+  let loadingTimer: number | undefined;
   if (parts[0] !== "settings") {
-    renderLoading(parts[0] || "start");
+    loadingTimer = window.setTimeout(() => {
+      renderLoading(parts[0] || "start");
+    }, 200);
   }
   try {
     if (parts.length === 0) {
@@ -131,6 +134,8 @@ async function renderRoute(path = `${window.location.pathname}${window.location.
       return;
     }
     renderRouteError(error instanceof Error ? error.message : "couldn't load this screen.");
+  } finally {
+    window.clearTimeout(loadingTimer);
   }
 }
 
@@ -165,17 +170,19 @@ function shell(title: string, body: HTMLElement): HTMLElement {
 }
 
 async function showStart(): Promise<void> {
-  sessionState = await api.getSession();
-  const { tiles } = await api.getTiles();
-  const profileState = await api.getProfiles();
+  const [session, { tiles }, profileState, activity, pinned] = await Promise.all([
+    api.getSession(),
+    api.getTiles(),
+    api.getProfiles(),
+    renderRecentActivity(),
+    renderPinnedPages()
+  ]);
+  sessionState = session;
   const selectedProfileId = selectedProfile(profileState.profiles, profileState.default_id);
   const body = document.createElement("section");
   body.className = "start-screen";
   body.append(renderTileGrid(tiles, (key) => visit(`/tile/${encodeURIComponent(key)}`)));
-
-  const activity = await renderRecentActivity();
   body.append(activity);
-  const pinned = await renderPinnedPages();
   body.append(pinned);
 
   const chips = document.createElement("div");
@@ -227,9 +234,9 @@ async function openTile(key: string): Promise<void> {
   if (key === "todos") {
     const todoState = await api.getTodos();
     setScreen(shell("todos", renderTodos(todoState.todos, {
-      complete: (todoId) => void runTodoAction("todos.complete", todoId),
-      reopen: (todoId) => void runTodoAction("todos.reopen", todoId),
-      drop: (todoId) => void runTodoAction("todos.drop", todoId)
+      complete: (todoId) => runTodoAction("todos.complete", todoId),
+      reopen: (todoId) => runTodoAction("todos.reopen", todoId),
+      drop: (todoId) => runTodoAction("todos.drop", todoId)
     }, {
       configured: todoState.configured,
       warning: todoState.warning,
@@ -620,9 +627,9 @@ async function cancelJob(jobId: string): Promise<void> {
 async function runTodoAction(action: string, todoId: string): Promise<void> {
   try {
     await api.runAction(action, { todo_id: todoId });
-    await openTile("todos");
   } catch (error) {
     toast(error instanceof Error ? error.message : "action failed", "error");
+    throw error;
   }
 }
 
@@ -635,7 +642,7 @@ async function decideApproval(approvalId: string, decision: "approve" | "reject"
       await api.rejectApproval(approvalId);
       toast("rejected");
     }
-    visit("/tile/approvals");
+    await renderRoute();
   } catch (error) {
     toast(error instanceof Error ? error.message : "couldn't decide approval", "error");
   }
