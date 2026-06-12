@@ -77,13 +77,13 @@ export function renderGeneratedPage(
     const button = document.createElement("button");
     button.type = "button";
     button.className = "page-action";
-    button.textContent = item.label.toLowerCase();
-    button.addEventListener("click", async () => {
-      const meta = await actionMeta(api, item.action);
-      if (meta?.requires_confirmation && !window.confirm(`${meta.label}?`)) {
-        return;
-      }
+    const originalLabel = item.label.toLowerCase();
+    button.textContent = originalLabel;
+
+    const doRun = async () => {
       button.disabled = true;
+      button.classList.remove("armed");
+      button.textContent = originalLabel;
       status.textContent = "running action...";
       try {
         await api.runAction(item.action, { ...item.payload, page_id: page.id, job_id: page.job_id });
@@ -93,7 +93,38 @@ export function renderGeneratedPage(
         status.textContent = error instanceof Error ? error.message : "action failed";
         button.disabled = false;
       }
+    };
+
+    let armedTimer: number | undefined;
+    const disarm = () => {
+      button.classList.remove("armed");
+      button.textContent = originalLabel;
+      clearTimeout(armedTimer);
+    };
+
+    button.addEventListener("click", async () => {
+      if (button.classList.contains("armed")) {
+        clearTimeout(armedTimer);
+        disarm();
+        await doRun();
+        return;
+      }
+      const meta = await actionMeta(api, item.action);
+      if (meta?.requires_confirmation) {
+        button.textContent = `tap again to ${originalLabel}`;
+        button.classList.add("armed");
+        armedTimer = window.setTimeout(disarm, 3000);
+        return;
+      }
+      await doRun();
     });
+
+    button.addEventListener("blur", () => {
+      if (button.classList.contains("armed")) {
+        disarm();
+      }
+    });
+
     actions.append(button);
   }
 

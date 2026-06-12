@@ -93,7 +93,8 @@ export function renderTodos(todos: Todo[], actions?: TodoActions, state: TodoSur
 
   function makeActionHandler(todo: Todo) {
     return async (kind: "complete" | "reopen" | "drop", _todo: Todo, controls: HTMLElement): Promise<void> => {
-      const buttons = controls.querySelectorAll<HTMLButtonElement>("button");
+      const scope = controls.parentElement ?? controls;
+      const buttons = scope.querySelectorAll<HTMLButtonElement>("button");
       for (const btn of buttons) {
         btn.disabled = true;
       }
@@ -136,7 +137,8 @@ export function filterTodos(todos: Todo[], status: TodoFilter, projectId = "all"
 function renderTodoRow(todo: Todo, onAction?: (kind: "complete" | "reopen" | "drop", todo: Todo, controls: HTMLElement) => Promise<void>): HTMLElement {
   const row = document.createElement("div");
   row.className = `list-row todo-row ${todo.status}`;
-  const box = document.createElement("span");
+  const box = document.createElement("button");
+  box.type = "button";
   box.className = "wp-checkbox";
   box.textContent = todo.status === "done" ? "x" : "";
   const text = document.createElement("span");
@@ -151,14 +153,21 @@ function renderTodoRow(todo: Todo, onAction?: (kind: "complete" | "reopen" | "dr
     const controls = document.createElement("div");
     controls.className = "row-actions";
     if (todo.status === "open") {
+      box.setAttribute("aria-label", "mark done");
+      box.addEventListener("click", () => void onAction("complete", todo, controls));
       controls.append(
         actionButton("done", () => void onAction("complete", todo, controls)),
         actionButton("drop", () => void onAction("drop", todo, controls), "danger")
       );
     } else {
+      box.setAttribute("aria-label", "reopen");
+      box.addEventListener("click", () => void onAction("reopen", todo, controls));
       controls.append(actionButton("reopen", () => void onAction("reopen", todo, controls)));
     }
     row.append(controls);
+  } else {
+    box.setAttribute("aria-label", todo.status === "done" ? "done" : "open");
+    box.disabled = true;
   }
   return row;
 }

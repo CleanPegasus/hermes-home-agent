@@ -160,6 +160,10 @@ export function renderTileFace(face: TileFace): HTMLDivElement {
   return root;
 }
 
+function backHasContent(face: TileFace): boolean {
+  return face.count !== undefined || Boolean(face.glyph) || Boolean(face.emoji) || Boolean(face.line) || Boolean(face.sub) || Boolean(face.meta);
+}
+
 export function renderTile(tile: Tile, onOpen: (key: string) => void, index = 0, packed?: Pick<PackedTile, "shape" | "col" | "row">): HTMLButtonElement {
   const shape = packed?.shape ?? getTileShape(tile);
   const [colSpan, rowSpan] = shapeSize(shape);
@@ -190,6 +194,10 @@ export function renderTile(tile: Tile, onOpen: (key: string) => void, index = 0,
   back.classList.add("tile-back");
   inner.append(front, back);
 
+  if (!backHasContent(tile.back)) {
+    button.classList.add("tile-static");
+  }
+
   button.append(inner, label);
   return button;
 }
@@ -214,4 +222,10 @@ function gridColumnCount(): number {
     return 6;
   }
   return 4;
+}
+
+if (typeof document !== "undefined") {
+  document.addEventListener("visibilitychange", () => {
+    document.documentElement.classList.toggle("tiles-paused", document.hidden);
+  });
 }

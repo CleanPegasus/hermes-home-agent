@@ -1,5 +1,5 @@
 import type { ApiClient, Approval, Job, JobEvent, Page } from "./api";
-import { addFact, statusEmoji } from "./ui";
+import { addFact, emptyState, shortDate, statusEmoji } from "./ui";
 
 export function parseSseSteps(text: string): string[] {
   return text
@@ -35,7 +35,7 @@ export function renderWorkingScreen(command: string): HTMLElement {
       <button type="button" class="page-action danger" data-action="cancel" disabled>cancel</button>
     </div>
   `;
-  root.querySelector(".working-command")!.textContent = command.toLowerCase();
+  root.querySelector(".working-command")!.textContent = command;
   return root;
 }
 
@@ -143,10 +143,7 @@ export function renderJobsList(jobs: Job[], openJob: (jobId: string) => void): H
     list.append(row);
   }
   if (jobs.length === 0) {
-    const empty = document.createElement("p");
-    empty.className = "empty";
-    empty.textContent = "no jobs yet.";
-    list.append(empty);
+    list.append(emptyState("⚙️", "no jobs yet.", "send hermes a command to get started"));
   }
   root.append(list);
   return root;
@@ -211,8 +208,8 @@ export function renderJobDetail(detail: JobDetail, actions: JobDetailActions): H
 
   const facts = document.createElement("dl");
   facts.className = "fact-list";
-  addFact(facts, "started", detail.job.started_at || "not started");
-  addFact(facts, "finished", detail.job.finished_at || "not finished");
+  addFact(facts, "started", detail.job.started_at ? shortDate(detail.job.started_at) : "not started");
+  addFact(facts, "finished", detail.job.finished_at ? shortDate(detail.job.finished_at) : "not finished");
   if (detail.job.error) {
     addFact(facts, "error", detail.job.error);
   }

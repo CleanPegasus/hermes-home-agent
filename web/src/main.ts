@@ -27,6 +27,7 @@ import { addFact, toast } from "./ui";
 
 let api: ApiClient = createApiClient();
 let sessionState: SessionInfo | null = null;
+let navDepth = 0;
 const COMMAND_SUGGESTIONS = ["add buy oat milk to my todos", "summarize today", "file a note"];
 const PROFILE_STORAGE_KEY = "HERMES_PROFILE_ID";
 const app = document.querySelector<HTMLDivElement>("#app");
@@ -45,6 +46,7 @@ function visit(path: string): void {
   const current = `${window.location.pathname}${window.location.search}`;
   if (current !== path) {
     history.pushState({}, "", path);
+    navDepth += 1;
   }
   void renderRoute(path);
 }
@@ -158,7 +160,7 @@ function shell(title: string, body: HTMLElement, opts?: { commandBar?: boolean }
   nav.className = "nav-bar";
   nav.innerHTML = '<button type="button" data-nav="back" aria-label="back">‹</button><button type="button" data-nav="home" aria-label="start">⊞</button><button type="button" data-nav="settings" aria-label="settings">⚙</button>';
   nav.querySelector('[data-nav="back"]')?.addEventListener("click", () => {
-    if (history.length > 1) {
+    if (navDepth > 0) {
       history.back();
     } else {
       visit("/");
@@ -609,8 +611,18 @@ async function showProfileEditor(profileId: string | null): Promise<void> {
 }
 
 function renderProfilePicker(profiles: Profile[], selectedId: string | null): HTMLElement {
+  const wrapper = document.createElement("div");
+  wrapper.className = "profile-picker-wrapper";
+
   const root = document.createElement("div");
   root.className = "profile-strip";
+
+  const nameLabel = document.createElement("span");
+  nameLabel.className = "profile-selected-name";
+  nameLabel.style.cssText = "font-size:12px;color:rgba(255,255,255,0.65);margin-top:4px;display:block;";
+  const initialProfile = profiles.find((p) => p.id === selectedId) || profiles[0];
+  nameLabel.textContent = initialProfile?.name ?? "";
+
   for (const profile of profiles) {
     const button = document.createElement("button");
     button.type = "button";
@@ -619,16 +631,22 @@ function renderProfilePicker(profiles: Profile[], selectedId: string | null): HT
     button.style.setProperty("--profile-color", profile.color);
     button.textContent = profile.emoji;
     button.title = profile.name;
-    button.classList.toggle("active", profile.id === selectedId);
+    const isActive = profile.id === selectedId;
+    button.classList.toggle("active", isActive);
+    button.setAttribute("aria-pressed", String(isActive));
     button.addEventListener("click", () => {
       localStorage.setItem(PROFILE_STORAGE_KEY, profile.id);
-      for (const item of root.querySelectorAll(".profile-pick")) {
-        item.classList.toggle("active", item === button);
+      for (const item of root.querySelectorAll<HTMLButtonElement>(".profile-pick")) {
+        const active = item === button;
+        item.classList.toggle("active", active);
+        item.setAttribute("aria-pressed", String(active));
       }
+      nameLabel.textContent = profile.name;
     });
     root.append(button);
   }
-  return root;
+  wrapper.append(root, nameLabel);
+  return wrapper;
 }
 
 function selectedProfile(profiles: Profile[], defaultId: string | null): string | null {
@@ -872,6 +890,7 @@ if ("serviceWorker" in navigator) {
 }
 
 window.addEventListener("popstate", () => {
+  navDepth = Math.max(0, navDepth - 1);
   void renderRoute();
 });
 

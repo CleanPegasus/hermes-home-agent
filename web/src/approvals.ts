@@ -1,5 +1,5 @@
 import type { Approval, Job } from "./api";
-import { addFact, statusEmoji } from "./ui";
+import { addFact, shortDate, statusEmoji } from "./ui";
 
 type ApprovalActions = {
   approve: (approvalId: string) => void;
@@ -96,8 +96,8 @@ export function renderApprovalDetail(approval: Approval, job: Job | null, action
   const facts = document.createElement("dl");
   facts.className = "fact-list";
   addFact(facts, "status", approval.status);
-  addFact(facts, "expires", approval.expires_at || "not set");
-  addFact(facts, "decided", approval.decided_at || "not decided");
+  addFact(facts, "expires", approval.expires_at ? shortDate(approval.expires_at) : "not set");
+  addFact(facts, "decided", approval.decided_at ? shortDate(approval.decided_at) : "not decided");
   addFact(facts, "source job", approval.job_id || "none");
   if (job) {
     addFact(facts, "command", job.command);

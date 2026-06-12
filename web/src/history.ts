@@ -1,6 +1,6 @@
 import type { Job, Tile, TileSize } from "./api";
 import { packTiles, renderTileFace, type TileShape } from "./tiles";
-import { relativeDate, statusEmoji } from "./ui";
+import { emptyState, relativeDate, statusEmoji } from "./ui";
 
 const HISTORY_SHAPES: TileShape[] = ["wide", "small", "small", "tall", "wide", "small"];
 
@@ -15,10 +15,7 @@ export function renderHistory(root: HTMLElement, jobs: Job[], onOpen: (job: Job)
   root.append(eyebrow, title);
 
   if (jobs.length === 0) {
-    const empty = document.createElement("p");
-    empty.className = "empty";
-    empty.textContent = "no chats yet.";
-    root.append(empty);
+    root.append(emptyState("📋", "no jobs yet.", "send hermes a command to get started"));
     return;
   }
 
@@ -50,6 +47,7 @@ function renderHistoryTile(job: Job, packed: ReturnType<typeof packTiles>[number
   button.style.setProperty("--tile-row-span", String(rowSpan));
   button.style.gridColumn = `${packed.col + 1} / span ${colSpan}`;
   button.style.gridRow = `${packed.row + 1} / span ${rowSpan}`;
+  button.setAttribute("aria-label", `${job.summary || job.command} · ${job.status} · ${relativeDate(job.started_at || job.finished_at)}`);
   button.addEventListener("click", () => onOpen(job));
 
   const inner = document.createElement("span");

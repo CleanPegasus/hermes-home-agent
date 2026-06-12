@@ -11,6 +11,26 @@
   box-sizing: border-box;
 }
 
+:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}
+
+.command-input:focus-visible,
+.search:focus-visible,
+.setup-form input:focus-visible,
+.note-form input:focus-visible,
+.note-form select:focus-visible,
+.note-form textarea:focus-visible,
+.merge-form select:focus-visible,
+.audit-filter-form input:focus-visible,
+.audit-filter-form select:focus-visible,
+.codex-form textarea:focus-visible,
+.followup-form input:focus-visible {
+  outline: 2px solid #000;
+  outline-offset: 0;
+}
+
 body {
   margin: 0;
   min-width: 320px;
@@ -226,7 +246,6 @@ small,
   font-size: var(--tile-line-size);
   font-weight: 300;
   line-height: 1.08;
-  text-transform: lowercase;
   overflow-wrap: anywhere;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -342,8 +361,8 @@ small,
 }
 
 .profile-pick {
-  width: 38px;
-  height: 38px;
+  width: 44px;
+  height: 44px;
   border: 1px solid color-mix(in srgb, var(--profile-color), white 20%);
   background: transparent;
   color: #fff;
@@ -430,6 +449,10 @@ small,
   overflow-x: auto;
 }
 
+.shell:has(.start-screen) {
+  padding-bottom: max(196px, calc(env(safe-area-inset-bottom) + 196px));
+}
+
 .start-screen::after {
   content: "";
   position: fixed;
@@ -485,7 +508,6 @@ small,
   padding: 14px;
   background: #fff;
   color: #000;
-  outline: 0;
 }
 
 .command-input:disabled,
@@ -695,7 +717,8 @@ button.chip {
   border: 1px solid rgba(255, 255, 255, 0.42);
   background: transparent;
   color: #fff;
-  padding: 6px 8px;
+  padding: 8px 10px;
+  min-height: 36px;
   font-size: 12px;
   text-transform: lowercase;
 }
@@ -707,13 +730,30 @@ button.chip {
   color: #fff;
 }
 
+.inline-action.armed,
+.page-action.armed {
+  border-color: #E51400;
+  background: #E51400;
+  color: #fff;
+}
+
 .wp-checkbox {
   display: inline-grid;
   place-items: center;
   width: 22px;
   height: 22px;
   border: 2px solid #fff;
+  background: transparent;
+  color: #fff;
   font-size: 13px;
+  padding: 0;
+  position: relative;
+}
+
+.wp-checkbox::before {
+  content: "";
+  position: absolute;
+  inset: -11px;
 }
 
 .search {
@@ -1090,6 +1130,15 @@ button.chip {
 .turnstile {
   animation: turnstile 280ms ease-out both;
   transform-origin: left center;
+}
+
+.tile-static .tile-inner {
+  animation: none;
+}
+
+.tiles-paused .tile-inner,
+html.tiles-paused .tile-inner {
+  animation-play-state: paused;
 }
 
 @keyframes tile-flip {
