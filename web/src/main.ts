@@ -23,7 +23,7 @@ import { renderProfileEditor, renderProfileFocus, renderProfilesPage } from "./p
 import { renderActionRunDetail, renderCalendarSurface, renderChannelsSurface, renderDiagnosticsBundle, renderSpendSurface, renderVitalsSurface } from "./surfaces";
 import { renderTileGrid } from "./tiles";
 import { renderTodos } from "./todos";
-import { addFact } from "./ui";
+import { addFact, toast } from "./ui";
 
 let api: ApiClient = createApiClient();
 let sessionState: SessionInfo | null = null;
@@ -142,7 +142,12 @@ function shell(title: string, body: HTMLElement): HTMLElement {
   const agentLabel = sessionState
     ? `hermes-01-${sessionState.agent.state}${sessionState.agent.configured ? "" : "-fallback"}`
     : "hermes-01-setup";
-  top.innerHTML = `<h1>${title}</h1><span class="agent-state">${agentLabel}</span>`;
+  const h1 = document.createElement("h1");
+  h1.textContent = title;
+  const agentSpan = document.createElement("span");
+  agentSpan.className = "agent-state";
+  agentSpan.textContent = agentLabel;
+  top.append(h1, agentSpan);
   const nav = document.createElement("nav");
   nav.className = "nav-bar";
   nav.innerHTML = '<button type="button" data-nav="back" aria-label="back">‹</button><button type="button" data-nav="home" aria-label="start">⊞</button><button type="button" data-nav="settings" aria-label="settings">⚙</button>';
@@ -292,7 +297,8 @@ async function renderCapabilityStatus(key: string): Promise<HTMLElement> {
   const capabilities = await api.getCapabilities();
   const root = document.createElement("section");
   root.className = "list-screen detail-screen";
-  root.innerHTML = `<p class="eyebrow">capability</p><h1>${key}</h1>`;
+  root.innerHTML = '<p class="eyebrow">capability</p><h1></h1>';
+  root.querySelector("h1")!.textContent = key;
   const facts = document.createElement("dl");
   facts.className = "fact-list";
   const status = capabilityStatus(key, capabilities.features);
@@ -393,18 +399,32 @@ async function showNoteDetail(noteId: string): Promise<void> {
 }
 
 async function saveNote(noteId: string, changes: { title: string; body_md: string; category: string; tags: string[] }): Promise<void> {
-  await api.updateNote(noteId, changes);
-  await showNoteDetail(noteId);
+  try {
+    await api.updateNote(noteId, changes);
+    toast("note saved");
+    await showNoteDetail(noteId);
+  } catch (error) {
+    toast(error instanceof Error ? error.message : "couldn't save note", "error");
+  }
 }
 
 async function archiveNote(noteId: string): Promise<void> {
-  await api.archiveNote(noteId);
-  visit("/tile/notes");
+  try {
+    await api.archiveNote(noteId);
+    toast("note archived");
+    visit("/tile/notes");
+  } catch (error) {
+    toast(error instanceof Error ? error.message : "couldn't archive note", "error");
+  }
 }
 
 async function mergeNote(noteId: string, targetNoteId: string): Promise<void> {
-  const { note } = await api.mergeNote(noteId, targetNoteId);
-  visit(`/note/${encodeURIComponent(note.id)}`);
+  try {
+    const { note } = await api.mergeNote(noteId, targetNoteId);
+    visit(`/note/${encodeURIComponent(note.id)}`);
+  } catch (error) {
+    toast(error instanceof Error ? error.message : "couldn't merge note", "error");
+  }
 }
 
 async function showJobDetail(jobId: string): Promise<void> {
@@ -527,8 +547,12 @@ function selectedProfile(profiles: Profile[], defaultId: string | null): string 
 }
 
 async function submitCodexPrompt(prompt: string, effort: CodexEffort, confirmDangerousMode: boolean): Promise<void> {
-  const { codex_run } = await api.createCodexRun(prompt, effort, confirmDangerousMode);
-  visit(`/codex/${encodeURIComponent(codex_run.id)}`);
+  try {
+    const { codex_run } = await api.createCodexRun(prompt, effort, confirmDangerousMode);
+    visit(`/codex/${encodeURIComponent(codex_run.id)}`);
+  } catch (error) {
+    toast(error instanceof Error ? error.message : "couldn't submit codex run", "error");
+  }
 }
 
 async function showCodexRun(runId: string): Promise<void> {
@@ -547,8 +571,12 @@ async function showCodexRun(runId: string): Promise<void> {
 }
 
 async function cancelCodexRun(runId: string): Promise<void> {
-  await api.cancelCodexRun(runId);
-  await showCodexRun(runId);
+  try {
+    await api.cancelCodexRun(runId);
+    await showCodexRun(runId);
+  } catch (error) {
+    toast(error instanceof Error ? error.message : "couldn't cancel run", "error");
+  }
 }
 
 async function showVitals(filters: ActionRunFilters = {}): Promise<void> {
@@ -563,32 +591,54 @@ async function showVitals(filters: ActionRunFilters = {}): Promise<void> {
 }
 
 async function syncConnectorsAndReload(tile: "calendar" | "channels" | "spend"): Promise<void> {
-  await api.syncConnectors();
-  await openTile(tile);
+  try {
+    await api.syncConnectors();
+    await openTile(tile);
+  } catch (error) {
+    toast(error instanceof Error ? error.message : "sync failed", "error");
+  }
 }
 
 async function retryJob(jobId: string): Promise<void> {
-  const { job_id } = await api.retryJob(jobId);
-  visit(`/job/${encodeURIComponent(job_id)}`);
+  try {
+    const { job_id } = await api.retryJob(jobId);
+    visit(`/job/${encodeURIComponent(job_id)}`);
+  } catch (error) {
+    toast(error instanceof Error ? error.message : "couldn't retry job", "error");
+  }
 }
 
 async function cancelJob(jobId: string): Promise<void> {
-  await api.cancelJob(jobId);
-  await showJobDetail(jobId);
+  try {
+    await api.cancelJob(jobId);
+    await showJobDetail(jobId);
+  } catch (error) {
+    toast(error instanceof Error ? error.message : "couldn't cancel job", "error");
+  }
 }
 
 async function runTodoAction(action: string, todoId: string): Promise<void> {
-  await api.runAction(action, { todo_id: todoId });
-  await openTile("todos");
+  try {
+    await api.runAction(action, { todo_id: todoId });
+    await openTile("todos");
+  } catch (error) {
+    toast(error instanceof Error ? error.message : "action failed", "error");
+  }
 }
 
 async function decideApproval(approvalId: string, decision: "approve" | "reject"): Promise<void> {
-  if (decision === "approve") {
-    await api.approveApproval(approvalId);
-  } else {
-    await api.rejectApproval(approvalId);
+  try {
+    if (decision === "approve") {
+      await api.approveApproval(approvalId);
+      toast("approved");
+    } else {
+      await api.rejectApproval(approvalId);
+      toast("rejected");
+    }
+    visit("/tile/approvals");
+  } catch (error) {
+    toast(error instanceof Error ? error.message : "couldn't decide approval", "error");
   }
-  visit("/tile/approvals");
 }
 
 async function renderRecentActivity(): Promise<HTMLElement> {

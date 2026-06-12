@@ -148,7 +148,6 @@ export function renderNoteDetail(note: Note, categories: Category[], allNotes: N
       <button type="submit" class="page-action">save</button>
       <button type="button" class="page-action danger" data-action="archive">archive</button>
     </div>
-    <p class="action-status"></p>
   `;
   const title = form.elements.namedItem("title") as HTMLInputElement;
   const category = form.elements.namedItem("category") as HTMLSelectElement;
