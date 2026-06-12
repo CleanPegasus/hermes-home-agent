@@ -106,6 +106,73 @@ curl -fsS \
 
 Expected: JSON with seeded `jobs`, `todos`, `calendar`, `notes`, `approvals`, and `spend` tiles.
 
+## Unified HTTP Docker Compose Deployment
+
+For a single VPS deployment, prefer the production Compose stack instead of running the API and web app separately. It starts:
+
+- `postgres`: pgvector Postgres with a persistent `postgres-data` volume.
+- `app`: the FastAPI server image built from `server/Dockerfile`.
+- `nginx`: the web image built from `web/Dockerfile`, serving the built PWA and proxying `/api/` to `app:8000`.
+
+Copy and edit the production env file:
+
+```bash
+cd /opt/hermes-home
+cp deploy/.env.production.example deploy/.env.production
+python3 - <<'PY'
+from pathlib import Path
+import secrets
+
+path = Path("deploy/.env.production")
+text = path.read_text()
+text = text.replace("HOME_API_TOKEN=change-me", f"HOME_API_TOKEN={secrets.token_urlsafe(32)}")
+text = text.replace("POSTGRES_PASSWORD=change-me", f"POSTGRES_PASSWORD={secrets.token_urlsafe(32)}")
+path.write_text(text)
+PY
+```
+
+Set `PUBLIC_BASE_URL` and `CORS_ORIGINS` to the HTTP origin users will open, for example `http://<vps-ip>` or `http://home.example.com`. Keep `VITE_API_BASE=` empty; nginx makes browser API calls same-origin. Fill in Vikunja values and set `OBSIDIAN_VAULT_HOST_PATH` to the host folder that should be mounted at `/data/obsidian-vault` inside the app container. If `AGENT_CMD` is set, it must point to a command available inside the app container; leave it empty for fallback-mode smoke tests.
+
+Create the nginx Basic Auth password file. Nginx validates this browser-facing username/password and injects the app bearer token upstream, so browser users do not need to know `HOME_API_TOKEN`.
+
+```bash
+mkdir -p deploy/nginx deploy/data/obsidian-vault
+read -rp "Nginx username: " NGINX_USER
+read -rsp "Nginx password: " NGINX_PASSWORD
+printf '\n'
+printf '%s:%s\n' "$NGINX_USER" "$(openssl passwd -apr1 "$NGINX_PASSWORD")" > deploy/nginx/.htpasswd
+unset NGINX_PASSWORD
+```
+
+Start the whole stack:
+
+```bash
+docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml up -d --build
+docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml ps
+docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml logs --tail=100 app nginx
+```
+
+Restart after code or env changes:
+
+```bash
+bin/hermes-home-restart
+```
+
+Run the app self-check through nginx:
+
+```bash
+set -a
+. deploy/.env.production
+set +a
+
+bin/hermes-deployment-self-check \
+  --base-url http://127.0.0.1:${HTTP_PORT:-80} \
+  --basic '<nginx-user>:<nginx-password>' \
+  --expect-nginx-injection
+```
+
+HTTPS can be added later by putting Cloudflare, Tailscale Serve, Caddy, or host-level nginx in front of this HTTP stack, or by adding certbot wiring to `deploy/compose.prod.yml`.
+
 If this server already has legacy notes in the database, export them into the vault once:
 
 ```bash

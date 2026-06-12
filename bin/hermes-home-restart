@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
+
+ENV_FILE="${HERMES_HOME_PROD_ENV_FILE:-deploy/.env.production}"
+COMPOSE_FILE="${HERMES_HOME_PROD_COMPOSE_FILE:-deploy/compose.prod.yml}"
+
+if [[ ! -f "$ENV_FILE" ]]; then
+  echo "missing $ENV_FILE"
+  echo "copy deploy/.env.production.example to $ENV_FILE and fill in secrets first"
+  exit 1
+fi
+
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --build --force-recreate app nginx
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs --tail=80 app nginx

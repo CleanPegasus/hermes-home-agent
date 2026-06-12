@@ -17,3 +17,7 @@ dist/
 .vite/
 coverage/
 test-results/
+
+deploy/.env.production
+deploy/nginx/.htpasswd
+deploy/data/
