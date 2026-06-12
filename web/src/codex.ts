@@ -13,7 +13,7 @@ const FALLBACK_EFFORT_OPTIONS: CodexEffort[] = ["low", "medium", "high", "xhigh"
 export function renderCodexSurface(state: CodexState, runs: CodexRun[], actions: CodexActions): HTMLElement {
   const root = document.createElement("section");
   root.className = "list-screen detail-screen";
-  root.innerHTML = '<p class="eyebrow">codex</p><h1>codex</h1>';
+  root.innerHTML = '<p class="eyebrow">codex</p>';
 
   const form = document.createElement("form");
   form.className = "codex-form";

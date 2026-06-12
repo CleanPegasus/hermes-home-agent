@@ -1,6 +1,6 @@
 import type { Job, Tile, TileSize } from "./api";
 import { tileIcon } from "./icons";
-import { packTiles, renderTileFace, type TileShape } from "./tiles";
+import { fitTileText, packTiles, renderTileFace, type TileShape } from "./tiles";
 import { emptyState, relativeDate } from "./ui";
 
 const HISTORY_SHAPES: TileShape[] = ["wide", "small", "small", "tall", "wide", "small"];
@@ -11,9 +11,8 @@ export function renderHistory(root: HTMLElement, jobs: Job[], onOpen: (job: Job)
   const eyebrow = document.createElement("p");
   eyebrow.className = "eyebrow";
   eyebrow.textContent = "history";
-  const title = document.createElement("h1");
-  title.textContent = "history";
-  root.append(eyebrow, title);
+  // No h1 here — shell already renders "history" as the panorama h1
+  root.append(eyebrow);
 
   if (jobs.length === 0) {
     root.append(emptyState("📋", "no jobs yet.", "send hermes a command to get started"));
@@ -34,6 +33,14 @@ export function renderHistory(root: HTMLElement, jobs: Job[], onOpen: (job: Job)
       }
     }
     root.append(heading, grid);
+    // Fit text after tiles are in the document
+    if (typeof window !== "undefined" && "requestAnimationFrame" in window) {
+      window.requestAnimationFrame(() => {
+        for (const tile of grid.querySelectorAll<HTMLElement>(".tile")) {
+          fitTileText(tile);
+        }
+      });
+    }
   }
 }
 
@@ -48,7 +55,6 @@ function renderHistoryTile(job: Job, packed: ReturnType<typeof packTiles>[number
   button.style.setProperty("--tile-row-span", String(rowSpan));
   button.style.gridColumn = `${packed.col + 1} / span ${colSpan}`;
   button.style.gridRow = `${packed.row + 1} / span ${rowSpan}`;
-  button.setAttribute("aria-label", `${job.summary || job.command} · ${job.status} · ${relativeDate(job.started_at || job.finished_at)}`);
   button.addEventListener("click", () => onOpen(job));
 
   // Watermark: status icon, low-opacity, bottom-right
@@ -94,12 +100,30 @@ function renderHistoryTile(job: Job, packed: ReturnType<typeof packTiles>[number
   // History tiles always static (no back content)
   button.classList.add("tile-static");
 
+  const humanStatus = humanizeStatus(job.status, packed.shape);
   const label = document.createElement("span");
   label.className = "tile-label";
-  label.textContent = job.status;
+  label.textContent = humanStatus;
+
+  // Update aria-label with human-readable status (full form, not abbreviated)
+  const fullHuman = humanizeStatus(job.status, "wide");
+  button.setAttribute("aria-label", `${job.summary || job.command} · ${fullHuman} · ${relativeDate(job.started_at || job.finished_at)}`);
 
   button.append(watermark, inner, label);
   return button;
+}
+
+/**
+ * Returns a human-readable status label for display on a tile.
+ * For small (1×1) tiles, uses a short form to avoid truncation.
+ */
+function humanizeStatus(status: Job["status"], shape: TileShape): string {
+  // For small tiles, needs_approval is shortened — all others are already short enough
+  if (shape === "small" && status === "needs_approval") {
+    return "approval";
+  }
+  // Replace underscores with spaces for display
+  return (status as string).replace(/_/g, " ");
 }
 
 function groupJobsByDay(jobs: Job[]): Array<{ label: string; jobs: Job[] }> {

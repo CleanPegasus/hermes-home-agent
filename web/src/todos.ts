@@ -20,7 +20,7 @@ const FILTERS: TodoFilter[] = ["open", "done", "dropped"];
 export function renderTodos(todos: Todo[], actions?: TodoActions, state: TodoSurfaceState = {}): HTMLElement {
   const root = document.createElement("section");
   root.className = "list-screen";
-  root.innerHTML = '<p class="eyebrow">agent canonical</p><h1>todos</h1>';
+  root.innerHTML = '<p class="eyebrow">agent canonical</p>';
   const tabs = document.createElement("div");
   tabs.className = "pivot-tabs";
   tabs.setAttribute("role", "tablist");

@@ -129,7 +129,7 @@ export async function waitForJob(
 export function renderJobsList(jobs: Job[], openJob: (jobId: string) => void): HTMLElement {
   const root = document.createElement("section");
   root.className = "list-screen";
-  root.innerHTML = '<p class="eyebrow">jobs - live ledger</p><h1>jobs</h1>';
+  root.innerHTML = '<p class="eyebrow">jobs - live ledger</p>';
   const list = document.createElement("div");
   list.className = "metro-list";
   for (const job of jobs) {

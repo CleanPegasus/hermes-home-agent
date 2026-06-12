@@ -11,7 +11,7 @@ type ApprovalActions = {
 export function renderApprovals(approvals: Approval[], actions: ApprovalActions): HTMLElement {
   const root = document.createElement("section");
   root.className = "list-screen";
-  root.innerHTML = '<p class="eyebrow">trust inbox</p><h1>approvals</h1>';
+  root.innerHTML = '<p class="eyebrow">trust inbox</p>';
 
   const list = document.createElement("div");
   list.className = "metro-list";

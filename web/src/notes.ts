@@ -11,7 +11,7 @@ export function renderNotes(notes: Note[], categories: Category[] = [], onOpen?:
   const openNote = onOpen;
   const root = document.createElement("section");
   root.className = "list-screen";
-  root.innerHTML = '<p class="eyebrow">hermes native</p><h1>notes</h1>';
+  root.innerHTML = '<p class="eyebrow">hermes native</p>';
   if (state.configured === false) {
     root.append(emptyState("📂", "connect your obsidian vault", state.warning || undefined));
     return root;

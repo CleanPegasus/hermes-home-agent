@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { Tile, TileSize } from "./api";
 import { tileIcon } from "./icons";
 import { extractActionButtons } from "./pages";
-import { getTileShape, packTiles, renderTileFace, renderTile, renderTileGrid } from "./tiles";
+import { getTileShape, packTiles, renderTileFace, renderTile, renderTileGrid, trimLastWord } from "./tiles";
 
 function makeTile(key: string, size: TileSize, sort: number): Tile {
   return {
@@ -187,6 +187,29 @@ function shapeSize(shape: string): [number, number] {
   }
   return [1, 1];
 }
+
+describe("trimLastWord", () => {
+  it("drops the last word from a multi-word string", () => {
+    expect(trimLastWord("review the quarterly insurance paperwork")).toBe("review the quarterly insurance");
+  });
+
+  it("returns null for a single-word string", () => {
+    expect(trimLastWord("hello")).toBeNull();
+  });
+
+  it("handles trailing punctuation and strips it", () => {
+    expect(trimLastWord("review the paperwork,")).toBe("review the");
+    expect(trimLastWord("buy milk.")).toBe("buy");
+  });
+
+  it("handles trailing ellipsis from previous trim", () => {
+    expect(trimLastWord("review the quarterly…")).toBe("review the");
+  });
+
+  it("returns null when only whitespace remains after trim", () => {
+    expect(trimLastWord("one")).toBeNull();
+  });
+});
 
 describe("generated page action parsing", () => {
   it("extracts data-action buttons and parses payload json", () => {

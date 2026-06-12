@@ -76,13 +76,30 @@ const ICONS: Record<string, () => SVGSVGElement> = {
       "M4 4h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H8l-4 3V6a2 2 0 0 1 2-2z"
     ]),
 
-  // circle with currency symbol (clean $ stroke)
-  spend: () =>
-    svg([
-      "M12 2a10 10 0 1 0 0 20A10 10 0 0 0 12 2z",
-      "M12 7v10",
-      "M9 9.5a3 3 0 0 1 6 0c0 1.5-1.5 2-3 2.5s-3 1-3 2.5a3 3 0 0 0 6 0"
-    ]),
+  // banknote: rounded rectangle with center circle
+  spend: () => {
+    const ns = "http://www.w3.org/2000/svg";
+    const el = document.createElementNS(ns, "svg") as SVGSVGElement;
+    el.setAttribute("viewBox", "0 0 24 24");
+    el.setAttribute("fill", "none");
+    el.setAttribute("stroke", "currentColor");
+    el.setAttribute("stroke-width", "1.6");
+    el.setAttribute("stroke-linecap", "round");
+    el.setAttribute("stroke-linejoin", "round");
+    el.setAttribute("aria-hidden", "true");
+    const rect = document.createElementNS(ns, "rect");
+    rect.setAttribute("x", "3");
+    rect.setAttribute("y", "7");
+    rect.setAttribute("width", "18");
+    rect.setAttribute("height", "10");
+    rect.setAttribute("rx", "1");
+    const circle = document.createElementNS(ns, "circle");
+    circle.setAttribute("cx", "12");
+    circle.setAttribute("cy", "12");
+    circle.setAttribute("r", "2.5");
+    el.append(rect, circle);
+    return el;
+  },
 
   // pulse / heartbeat polyline
   vitals: () => {

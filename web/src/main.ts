@@ -212,6 +212,7 @@ async function showStart(prefillCommand?: string): Promise<void> {
   const body = document.createElement("section");
   body.className = "start-screen";
   body.append(renderTileGrid(tiles, (key) => visit(`/tile/${encodeURIComponent(key)}`)));
+  body.append(renderProfilePicker(profileState.profiles, selectedProfileId));
   body.append(activity);
   body.append(pinned);
 
@@ -254,7 +255,7 @@ async function showStart(prefillCommand?: string): Promise<void> {
     }
   });
 
-  body.append(renderProfilePicker(profileState.profiles, selectedProfileId), chips, form);
+  body.append(chips, form);
   setScreen(shell("start", body, { commandBar: false }));
 
   if (prefillCommand) {

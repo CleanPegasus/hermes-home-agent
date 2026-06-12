@@ -2,6 +2,59 @@ import type { Tile, TileFace } from "./api";
 import { tileIcon } from "./icons";
 
 export type TileShape = "small" | "wide" | "tall" | "large";
+
+/**
+ * Drops the last word and any trailing punctuation/whitespace from text.
+ * Returns null when nothing is left.
+ */
+export function trimLastWord(text: string): string | null {
+  // Remove trailing ellipsis if present, then strip trailing whitespace/punctuation
+  const stripped = text.replace(/…$/, "").replace(/[\s,;:.!?]+$/, "");
+  const lastSpace = stripped.lastIndexOf(" ");
+  if (lastSpace < 0) {
+    return null;
+  }
+  const trimmed = stripped.slice(0, lastSpace).replace(/[\s,;:.!?]+$/, "");
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
+ * For each .tile-line and .tile-meta inside root, checks overflow and trims
+ * to word boundaries, appending "…". No-op when clientHeight is 0 (test env).
+ */
+export function fitTileText(root: HTMLElement): void {
+  for (const el of root.querySelectorAll<HTMLElement>(".tile-line, .tile-meta")) {
+    // No-op in non-layout environments (happy-dom, tests)
+    if (el.clientHeight === 0) {
+      continue;
+    }
+    const original = el.textContent ?? "";
+    if (!original) {
+      continue;
+    }
+    // Store original for accessibility
+    el.title = original;
+    // Check if overflow exists
+    if (el.scrollHeight <= el.clientHeight + 1) {
+      continue;
+    }
+    let cur = original;
+    let found = false;
+    while (el.scrollHeight > el.clientHeight + 1) {
+      const next = trimLastWord(cur);
+      if (next === null) {
+        el.hidden = true;
+        found = true;
+        break;
+      }
+      cur = next;
+      el.textContent = cur + "…";
+    }
+    if (!found && cur !== original) {
+      el.title = original;
+    }
+  }
+}
 export interface PackedTile {
   tile: Tile;
   shape: TileShape;
@@ -270,6 +323,13 @@ export function renderTileGrid(tiles: Tile[], onOpen: (key: string) => void): HT
     grid.replaceChildren();
     for (const [index, packed] of packTiles(tiles, gridColumnCount()).entries()) {
       grid.append(renderTile(packed.tile, onOpen, index, packed));
+    }
+    if (typeof window !== "undefined" && "requestAnimationFrame" in window) {
+      window.requestAnimationFrame(() => {
+        for (const tile of grid.querySelectorAll<HTMLElement>(".tile")) {
+          fitTileText(tile);
+        }
+      });
     }
   };
   renderPackedTiles();
