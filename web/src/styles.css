@@ -372,8 +372,6 @@ small,
   font-weight: 300;
   line-height: 1.15;
   -webkit-box-orient: vertical;
-  overflow-wrap: anywhere;
-  word-break: break-word;
 }
 
 .tile-meta {
@@ -383,8 +381,6 @@ small,
   color: rgba(255, 255, 255, 0.65);
   line-height: 1.15;
   -webkit-box-orient: vertical;
-  overflow-wrap: anywhere;
-  word-break: break-word;
 }
 
 /* Raise meta contrast on colored tiles (amber, etc.) */

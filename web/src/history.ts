@@ -115,11 +115,10 @@ function renderHistoryTile(job: Job, packed: ReturnType<typeof packTiles>[number
 
 /**
  * Returns a human-readable status label for display on a tile.
- * For small (1×1) tiles, uses a short form to avoid truncation.
+ * One-column shapes (small, tall) use a short form to avoid truncation.
  */
 function humanizeStatus(status: Job["status"], shape: TileShape): string {
-  // For small tiles, needs_approval is shortened — all others are already short enough
-  if (shape === "small" && status === "needs_approval") {
+  if ((shape === "small" || shape === "tall") && status === "needs_approval") {
     return "approval";
   }
   // Replace underscores with spaces for display

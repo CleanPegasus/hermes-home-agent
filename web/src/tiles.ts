@@ -34,24 +34,21 @@ export function fitTileText(root: HTMLElement): void {
     }
     // Store original for accessibility
     el.title = original;
-    // Check if overflow exists
-    if (el.scrollHeight <= el.clientHeight + 1) {
+    const overflows = () =>
+      el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1;
+    if (!overflows()) {
       continue;
     }
-    let cur = original;
-    let found = false;
-    while (el.scrollHeight > el.clientHeight + 1) {
-      const next = trimLastWord(cur);
-      if (next === null) {
-        el.hidden = true;
-        found = true;
+    let cur: string | null = original;
+    while (overflows()) {
+      cur = trimLastWord(cur);
+      if (cur === null) {
+        // A single word that can't fit: break it rather than hide the line.
+        el.textContent = original;
+        el.style.overflowWrap = "anywhere";
         break;
       }
-      cur = next;
       el.textContent = cur + "…";
-    }
-    if (!found && cur !== original) {
-      el.title = original;
     }
   }
 }
