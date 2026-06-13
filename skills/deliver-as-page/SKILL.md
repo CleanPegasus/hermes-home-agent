@@ -1,15 +1,17 @@
 ---
 name: deliver-as-page
-description: Publish Hermes results as sanitized pages instead of chat replies.
+description: Publish immediate agent-job results as sanitized pages instead of chat replies.
 ---
 
 # Deliver As Page
 
-Use this skill whenever Hermes completes a user command in Hermes Home. The durable output is a page stored through the Hermes Home MCP tool surface.
+Use this skill when Hermes completes an `agent_job` command in Hermes Home: research, summaries, diagnostics, reports, comparisons, generated artifacts, or other immediate work that needs a readable result surface.
+
+Do not use this skill for simple todo or note writes. Todo and note commands should write state through MCP tools, refresh tiles, call `job_set_summary`, and finish without `pages_publish`.
 
 ## Rules
 
-- Do not finish with a conversational answer when a page can be published.
+- Do not finish an `agent_job` with a conversational answer when a page can be published.
 - Publish exactly one primary page for the job with `pages_publish`.
 - Keep the page self-contained: no scripts, external assets, remote fonts, iframes, or network URLs.
 - Do not use inline event handlers such as `onclick`.

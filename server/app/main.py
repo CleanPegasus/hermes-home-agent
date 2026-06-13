@@ -30,7 +30,7 @@ from .jobs import ACTION_REGISTRY, cancel_job, create_job, derive_history_meta, 
 from .todo_provider import list_todos
 from .vault import VaultConfigurationError, VaultError, VaultNoteNotFoundError, VaultStore
 from .vikunja import VikunjaConfigurationError, VikunjaError, vikunja_status
-from .models import ActionRun, AgentProfile, Approval, CalendarEvent, Category, ChannelMessage, CodexRun, ConnectorSyncRun, Job, JobEvent, Note, Page, SpendItem, Tile, Todo, utcnow
+from .models import ActionRun, AgentProfile, Approval, CalendarEvent, Category, ChannelMessage, Clarification, CodexRun, ConnectorSyncRun, Job, JobEvent, Note, Page, SpendItem, Tile, Todo, utcnow
 
 CODEX_EFFORT_LEVELS = ("low", "medium", "high", "xhigh")
 CodexEffort = Literal["low", "medium", "high", "xhigh"]
@@ -41,6 +41,10 @@ _VAULT_PATH: str | None = None
 class CommandIn(BaseModel):
     text: str = Field(min_length=1, max_length=2000)
     profile_id: str | None = Field(default=None, max_length=80)
+
+
+class ClarificationAnswerIn(BaseModel):
+    answer: str = Field(min_length=1, max_length=4000)
 
 
 class ActionIn(BaseModel):
@@ -161,7 +165,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/session")
     async def session_info(_: None = Depends(require_auth), session: Session = Depends(get_session)) -> dict:
-        running = session.scalar(select(Job).where(Job.status.in_(["queued", "running", "needs_approval"])).limit(1))
+        running = session.scalar(select(Job).where(Job.status.in_(["queued", "running", "needs_approval", "needs_clarification"])).limit(1))
         pending_approval = session.scalar(select(Approval).where(Approval.status == "pending").limit(1))
         return {
             "ok": True,
@@ -411,11 +415,13 @@ def create_app() -> FastAPI:
         events = session.scalars(select(JobEvent).where(JobEvent.job_id == job_id).order_by(JobEvent.ts, JobEvent.id)).all()
         page = session.get(Page, row.page_id) if row.page_id else None
         approvals = session.scalars(select(Approval).where(Approval.job_id == job_id)).all()
+        clarifications = session.scalars(select(Clarification).where(Clarification.job_id == job_id).order_by(Clarification.created_at, Clarification.id)).all()
         return {
             "job": serialize_job(row, session.get(AgentProfile, row.profile_id) if row.profile_id else None),
             "events": [serialize_event(event) for event in events],
             "page": serialize_page(page) if page else None,
             "approvals": [serialize_approval(approval) for approval in approvals],
+            "clarifications": [serialize_clarification(clarification) for clarification in clarifications],
         }
 
     @app.get("/api/jobs/{job_id}/diagnostics")
@@ -426,11 +432,13 @@ def create_app() -> FastAPI:
         events = session.scalars(select(JobEvent).where(JobEvent.job_id == job_id).order_by(JobEvent.ts, JobEvent.id)).all()
         page = session.get(Page, row.page_id) if row.page_id else None
         approvals = session.scalars(select(Approval).where(Approval.job_id == job_id)).all()
+        clarifications = session.scalars(select(Clarification).where(Clarification.job_id == job_id).order_by(Clarification.created_at, Clarification.id)).all()
         return {
             "job": serialize_job(row, session.get(AgentProfile, row.profile_id) if row.profile_id else None),
             "events": [serialize_event(event) for event in events],
             "page": serialize_page_summary(page) if page else None,
             "approvals": [serialize_approval(approval) for approval in approvals],
+            "clarifications": [serialize_clarification(clarification) for clarification in clarifications],
             "environment": {
                 "agent_configured": bool(os.getenv("AGENT_CMD")),
                 "database": database_kind(os.getenv("DATABASE_URL", "sqlite:///./hermes-home.db")),
@@ -475,6 +483,54 @@ def create_app() -> FastAPI:
         session.commit()
         start_agent_job(session_factory, next_job_id)
         return {"job_id": next_job_id}
+
+    @app.get("/api/clarifications/{clarification_id}")
+    async def clarification(clarification_id: str, _: None = Depends(require_auth), session: Session = Depends(get_session)) -> dict:
+        row = session.get(Clarification, clarification_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="clarification not found")
+        job = session.get(Job, row.job_id)
+        return {
+            "clarification": serialize_clarification(row),
+            "job": serialize_job(job, session.get(AgentProfile, job.profile_id) if job and job.profile_id else None) if job else None,
+        }
+
+    @app.post("/api/clarifications/{clarification_id}/answer")
+    async def answer_clarification(
+        clarification_id: str,
+        payload: ClarificationAnswerIn,
+        _: None = Depends(require_auth),
+        session: Session = Depends(get_session),
+    ) -> dict:
+        answer = payload.answer.strip()
+        if not answer:
+            raise HTTPException(status_code=422, detail="answer must not be blank")
+        row = session.get(Clarification, clarification_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="clarification not found")
+        source_job = session.get(Job, row.job_id)
+        if not source_job:
+            raise HTTPException(status_code=404, detail="source job not found")
+        if row.status == "answered" and row.follow_up_job_id:
+            follow_up = session.get(Job, row.follow_up_job_id)
+            return {
+                "job_id": row.follow_up_job_id,
+                "clarification": serialize_clarification(row),
+                "job": serialize_job(follow_up, session.get(AgentProfile, follow_up.profile_id) if follow_up and follow_up.profile_id else None) if follow_up else None,
+                "idempotent_replay": True,
+            }
+        follow_up = create_job(session, clarification_follow_up_command(source_job, row, answer), profile_id=source_job.profile_id)
+        row.answer = answer
+        row.status = "answered"
+        row.answered_at = utcnow()
+        row.follow_up_job_id = follow_up.id
+        session.commit()
+        start_agent_job(session_factory, follow_up.id)
+        return {
+            "job_id": follow_up.id,
+            "clarification": serialize_clarification(row),
+            "job": serialize_job(follow_up, session.get(AgentProfile, follow_up.profile_id) if follow_up.profile_id else None),
+        }
 
     @app.get("/api/pages/{page_id}")
     async def page(page_id: str, _: None = Depends(require_auth), session: Session = Depends(get_session)) -> dict:
@@ -1249,6 +1305,33 @@ def serialize_job(job: Job, profile: AgentProfile | None = None) -> dict:
     }
 
 
+def serialize_clarification(clarification: Clarification) -> dict:
+    return {
+        "id": clarification.id,
+        "job_id": clarification.job_id,
+        "question": clarification.question,
+        "choices": clarification.choices or [],
+        "draft": clarification.draft or {},
+        "answer": clarification.answer,
+        "status": clarification.status,
+        "follow_up_job_id": clarification.follow_up_job_id,
+        "created_at": serialize_dt(clarification.created_at),
+        "answered_at": serialize_dt(clarification.answered_at),
+    }
+
+
+def clarification_follow_up_command(job: Job, clarification: Clarification, answer: str) -> str:
+    draft_json = json.dumps(clarification.draft or {}, sort_keys=True)
+    return "\n".join(
+        [
+            f"Original command: {job.command}",
+            f"Clarification question: {clarification.question}",
+            f"Clarification answer: {answer}",
+            f"Draft interpretation: {draft_json}",
+        ]
+    )
+
+
 def serialize_profile(profile: AgentProfile) -> dict:
     return {
         "id": profile.id,
@@ -1450,7 +1533,7 @@ def format_sse(event: JobEvent) -> str:
 
 async def stream_job_events(session_factory: sessionmaker[Session], job_id: str) -> AsyncIterator[str]:
     seen: set[str] = set()
-    terminal = {"done", "failed", "needs_approval", "cancelled"}
+    terminal = {"done", "failed", "needs_approval", "needs_clarification", "cancelled"}
     while True:
         with session_factory() as session:
             job = session.get(Job, job_id)

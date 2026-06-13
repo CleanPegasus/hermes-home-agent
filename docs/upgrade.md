@@ -52,8 +52,8 @@ schedule dentist checkup next Tuesday at 4pm
 
 Expected results:
 
-- Todo command creates one open Vikunja task, refreshes the Hermes todos cache/tile, and publishes a page with a `todos.complete` action.
-- Note command creates one deduped note in the best category, refreshes the notes tile, and publishes a reference page.
+- Todo command creates one open Vikunja task, refreshes the Hermes todos cache/tile, and finishes with a job summary instead of a generated page.
+- Note command creates one deduped note in the best category, refreshes the notes tile, and finishes with a job summary instead of a generated page.
 - Summary command reads Vikunja-backed todos without mutating them, publishes a useful page, and logs the read steps.
 - Calendar write command creates a pending approval instead of writing directly, refreshes the approvals tile, and explains the pending action in the page.
 

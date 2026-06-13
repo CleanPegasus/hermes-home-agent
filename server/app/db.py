@@ -197,6 +197,17 @@ def apply_lightweight_migrations(engine: Engine) -> None:
                 connection.execute(text(f"ALTER TABLE pages ADD COLUMN provenance {json_type(dialect)} DEFAULT {empty_json_default(dialect)}"))
         if "jobs" in table_names:
             columns = {column["name"] for column in inspector.get_columns("jobs")}
+            if dialect.startswith("postgres"):
+                connection.execute(text("ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_status_check"))
+                connection.execute(
+                    text(
+                        """
+                        ALTER TABLE jobs
+                        ADD CONSTRAINT jobs_status_check
+                        CHECK (status IN ('queued', 'running', 'done', 'failed', 'needs_approval', 'needs_clarification', 'cancelled'))
+                        """
+                    )
+                )
             if "stdout_tail" not in columns:
                 connection.execute(text("ALTER TABLE jobs ADD COLUMN stdout_tail TEXT"))
             if "stderr_tail" not in columns:
@@ -209,6 +220,12 @@ def apply_lightweight_migrations(engine: Engine) -> None:
                 connection.execute(text("ALTER TABLE jobs ADD COLUMN summary TEXT"))
             if "profile_id" not in columns:
                 connection.execute(text("ALTER TABLE jobs ADD COLUMN profile_id TEXT"))
+        if "clarifications" in table_names:
+            columns = {column["name"] for column in inspector.get_columns("clarifications")}
+            if "follow_up_job_id" not in columns:
+                connection.execute(text("ALTER TABLE clarifications ADD COLUMN follow_up_job_id TEXT"))
+            if "answered_at" not in columns:
+                connection.execute(text(f"ALTER TABLE clarifications ADD COLUMN answered_at {timestamp_type(dialect)}"))
         if "todos" in table_names:
             columns = {column["name"] for column in inspector.get_columns("todos")}
             if "external_id" not in columns:

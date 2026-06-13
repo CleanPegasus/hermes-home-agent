@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { parseSseSteps, waitForJob } from "./jobs";
+import { parseSseSteps, renderJobDetail, waitForJob } from "./jobs";
 import type { ApiClient, Job } from "./api";
 
 function job(status: Job["status"], extra: Partial<Job> = {}): Job {
@@ -70,6 +70,20 @@ describe("waitForJob", () => {
     vi.useRealTimers();
   });
 
+  it("treats clarification requests as terminal job states", async () => {
+    vi.useFakeTimers();
+    const api = {
+      getJob: vi.fn(async () => ({ job: job("needs_clarification") })),
+      getJobEvents: vi.fn(async () => 'data: {"text":"needs clarification"}\n')
+    } as unknown as ApiClient;
+
+    const pending = waitForJob(api, "job-1", () => undefined, { intervalMs: 1000, maxAttempts: 1 });
+    await vi.runAllTimersAsync();
+
+    await expect(pending).resolves.toMatchObject({ status: "needs_clarification", error: null });
+    vi.useRealTimers();
+  });
+
   it("stops polling when the abort signal fires", async () => {
     vi.useFakeTimers();
     const getJob = vi.fn(async () => ({ job: job("running") }));
@@ -92,5 +106,44 @@ describe("waitForJob", () => {
     await expect(pending).resolves.toMatchObject({ status: "running" });
     expect(getJob.mock.calls.length).toBe(callsBeforeAbort);
     vi.useRealTimers();
+  });
+});
+
+describe("renderJobDetail", () => {
+  it("renders pending clarification questions and choices", () => {
+    const root = renderJobDetail(
+      {
+        job: job("needs_clarification"),
+        events: [],
+        page: null,
+        approvals: [],
+        clarifications: [
+          {
+            id: "clarification-1",
+            job_id: "job-1",
+            question: "Should I add this as a todo, or save a note?",
+            choices: ["todo", "note"],
+            draft: { command: "milk tomorrow" },
+            answer: null,
+            status: "pending",
+            follow_up_job_id: null,
+            created_at: null,
+            answered_at: null
+          }
+        ]
+      } as Parameters<typeof renderJobDetail>[0],
+      {
+        openPage: vi.fn(),
+        retry: vi.fn(),
+        cancel: vi.fn(),
+        diagnostics: vi.fn(),
+        answerClarification: vi.fn()
+      }
+    );
+
+    expect(root.textContent).toContain("Should I add this as a todo, or save a note?");
+    expect(root.textContent).toContain("todo");
+    expect(root.textContent).toContain("note");
+    expect(root.querySelector<HTMLInputElement>('input[name="answer"]')).not.toBeNull();
   });
 });

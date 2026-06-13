@@ -1,4 +1,4 @@
-import type { ApiClient, Approval, Job, JobEvent, Page } from "./api";
+import type { ApiClient, Approval, Clarification, Job, JobEvent, Page } from "./api";
 import { addFact, emptyState, shortDate, statusEmoji } from "./ui";
 
 export function parseSseSteps(text: string): string[] {
@@ -111,7 +111,7 @@ export async function waitForJob(
     }
     const elapsedSeconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
     options.onStatus?.(`still working... ${elapsedSeconds}s`);
-    if (["done", "failed", "needs_approval", "cancelled"].includes(jobResponse.job.status)) {
+    if (["done", "failed", "needs_approval", "needs_clarification", "cancelled"].includes(jobResponse.job.status)) {
       abortController?.abort();
       return jobResponse.job;
     }
@@ -156,6 +156,7 @@ type JobDetail = {
   events: JobEvent[];
   page: Page | null;
   approvals: Approval[];
+  clarifications?: Clarification[];
 };
 
 type JobDetailActions = {
@@ -163,6 +164,7 @@ type JobDetailActions = {
   retry: (jobId: string) => void;
   cancel: (jobId: string) => void;
   diagnostics: (jobId: string) => void;
+  answerClarification?: (clarificationId: string, answer: string) => void;
 };
 
 export function renderJobDetail(detail: JobDetail, actions: JobDetailActions): HTMLElement {
@@ -261,6 +263,48 @@ export function renderJobDetail(detail: JobDetail, actions: JobDetailActions): H
     approvalHeading.textContent = "approvals";
     root.append(approvalHeading, approvals);
   }
+  const pendingClarifications = (detail.clarifications || []).filter((clarification) => clarification.status === "pending");
+  if (pendingClarifications.length > 0) {
+    const clarificationHeading = document.createElement("h2");
+    clarificationHeading.textContent = "clarification";
+    const clarificationList = document.createElement("div");
+    clarificationList.className = "metro-list compact-list";
+    for (const clarification of pendingClarifications) {
+      clarificationList.append(renderClarification(clarification, actions.answerClarification));
+    }
+    root.append(clarificationHeading, clarificationList);
+  }
+  return root;
+}
+
+function renderClarification(clarification: Clarification, answer?: (clarificationId: string, answer: string) => void): HTMLElement {
+  const root = document.createElement("form");
+  root.className = "list-row clarification-row";
+  const body = document.createElement("span");
+  const question = document.createElement("strong");
+  question.textContent = clarification.question;
+  body.append(question);
+  if (clarification.choices.length > 0) {
+    const choices = document.createElement("small");
+    choices.textContent = clarification.choices.join(" / ");
+    body.append(choices);
+  }
+  const input = document.createElement("input");
+  input.name = "answer";
+  input.autocomplete = "off";
+  input.value = clarification.choices[0] || "";
+  const submit = document.createElement("button");
+  submit.type = "submit";
+  submit.className = "page-action";
+  submit.textContent = "answer";
+  root.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const value = input.value.trim();
+    if (value) {
+      answer?.(clarification.id, value);
+    }
+  });
+  root.append(body, input, submit);
   return root;
 }
 

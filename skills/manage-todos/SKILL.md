@@ -14,7 +14,7 @@ Use this skill for any command that creates or edits a todo.
 3. Reuse labels case-insensitively. Create at most one new label per todo, lowercase and singular.
 4. Convert natural-language due dates into RFC3339 in the user's timezone before passing `due_at`.
 5. Map priority this way: urgent/asap = 5, important = 4, normal = omit or 0, someday/maybe = 1.
-6. Publish a page that states the project, labels, due date, and priority that were set so the user can verify the result at a glance.
+6. Call `job_set_summary` with a concise summary of the created or updated todo. Do not call `pages_publish` for todo-only commands.
 
 ## Guardrails
 

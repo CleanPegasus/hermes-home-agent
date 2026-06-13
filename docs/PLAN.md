@@ -71,7 +71,7 @@ When the server invokes Hermes or another agent command, it sets:
 - `HERMES_HOME_JOB_ID`: active job id for progress logging.
 - `HOME_API_TOKEN`: API token if the agent needs to call the app server.
 
-The agent uses the MCP tools to write todos, notes, pages, approvals, calendar requests, and tile updates. It should emit short job events for each meaningful step. It should finish by publishing a page, because the web app treats a page as the durable result of a job.
+The agent uses the MCP tools to write todos, notes, pages, approvals, calendar requests, and tile updates. It should emit short job events for each meaningful step. Todo and note commands should finish with a job summary and no generated page. Immediate agent jobs should publish a page when the result is a report, analysis, or other artifact that needs a readable surface.
 
 ## Generated Page Rules
 
@@ -112,4 +112,3 @@ cd server && python -m pytest -q
 cd web && npm test -- --run && npm run build
 docker compose up postgres
 ```
-

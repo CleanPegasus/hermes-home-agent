@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import shlex
 import subprocess
@@ -14,7 +13,6 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
 from .models import AgentProfile, Approval, CalendarEvent, Job, JobEvent, Page, Tile, utcnow
-from .sanitize import page_document
 from .todo_provider import cached_done_todos, cached_open_todos, complete_todo, create_todo, drop_todo, reopen_todo
 from .vault import VaultStore
 from .vikunja import VikunjaError, vikunja_status
@@ -158,7 +156,7 @@ def invoke_external_agent(session: Session, job: Job, agent_cmd: str) -> None:
     job.exit_code = process.returncode
     job.stdout_tail = tail_text(stdout)
     job.stderr_tail = tail_text(stderr)
-    if job.status == "cancelled":
+    if job.status in {"cancelled", "needs_clarification", "done"}:
         refresh_jobs_tile(session)
         session.commit()
         return
@@ -241,44 +239,9 @@ def invoke_fallback_agent(session: Session, job: Job) -> None:
     log_event(session, job.id, f"created Vikunja todo · {parsed.title}")
     job.emoji = "✅"
     job.summary = f"added '{parsed.title}' to todos"[:140]
-
-    html = page_document(
-        parsed.title,
-        f"""
-        <p class="lede">i converted the command into a Vikunja todo and prepared one action.</p>
-        <section class="verdict">todo added · {parsed.title}</section>
-        <table>
-          <tbody>
-            <tr><th>state</th><td>open</td></tr>
-            <tr><th>source</th><td>vikunja</td></tr>
-          </tbody>
-        </table>
-        <button onclick="alert('blocked')" data-action="todos.complete" data-payload='{json.dumps({"todo_id": todo.id})}'>mark done</button>
-        <script>window.evil = true</script>
-        """,
-    )
-    publish_page(
-        session,
-        job,
-        parsed.title,
-        html,
-        provenance={
-            "reads": [{"type": "command", "label": "user command", "value": job.command}],
-            "writes": [
-                {
-                    "type": "todo",
-                    "id": todo.id,
-                    "external_id": todo.external_id,
-                    "provider": todo.provider,
-                    "title": todo.title,
-                    "status": todo.status,
-                },
-                {"type": "tile", "key": "todos", "reason": "todo count changed"},
-            ],
-            "skipped": [{"type": "external_agent", "reason": "AGENT_CMD is not configured"}],
-            "inaccessible": [],
-        },
-    )
+    job.status = "done"
+    job.finished_at = utcnow()
+    refresh_jobs_tile(session)
 
 
 @dataclass(frozen=True)
@@ -558,7 +521,7 @@ def cancel_job(session: Session, job: Job) -> dict:
 def refresh_jobs_tile(session: Session) -> None:
     session.flush()
     running = session.scalar(
-        select(func.count()).select_from(Job).where(Job.status.in_(["queued", "running", "needs_approval"]))
+        select(func.count()).select_from(Job).where(Job.status.in_(["queued", "running", "needs_approval", "needs_clarification"]))
     ) or 0
     last = session.scalar(select(Job).where(Job.status == "done").order_by(desc(Job.finished_at)).limit(1))
     update_tile(
