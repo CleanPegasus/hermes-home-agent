@@ -50,22 +50,27 @@ path = Path("deploy/.env.production")
 text = path.read_text()
 text = text.replace("HOME_API_TOKEN=change-me", f"HOME_API_TOKEN={secrets.token_urlsafe(32)}")
 text = text.replace("POSTGRES_PASSWORD=change-me", f"POSTGRES_PASSWORD={secrets.token_urlsafe(32)}")
+text = text.replace("VIKUNJA_POSTGRES_PASSWORD=change-me", f"VIKUNJA_POSTGRES_PASSWORD={secrets.token_urlsafe(32)}")
+text = text.replace("VIKUNJA_SERVICE_SECRET=change-me", f"VIKUNJA_SERVICE_SECRET={secrets.token_urlsafe(32)}")
 path.write_text(text)
 PY
 ```
 
-Edit `deploy/.env.production` for `PUBLIC_BASE_URL`, `CORS_ORIGINS`, Vikunja, Obsidian, and optional `AGENT_CMD`, then start the stack. If `AGENT_CMD` is set, it must point to a command that exists inside the app container; leave it empty for fallback-mode smoke tests.
+Edit `deploy/.env.production` for `PUBLIC_BASE_URL`, `CORS_ORIGINS`, Obsidian, and optional `AGENT_CMD`, then start the stack. Vikunja stays internal to the Compose network at `http://vikunja:3456`; nginx does not expose the Vikunja UI or API. If `AGENT_CMD` is set, it must point to a command that exists inside the app container; leave it empty for fallback-mode smoke tests.
 
-Create the nginx Basic Auth password file:
+Create the nginx Basic Auth password file and the host-side Vikunja token file path:
 
 ```bash
-mkdir -p deploy/nginx deploy/data/obsidian-vault
+mkdir -p deploy/nginx deploy/data/obsidian-vault deploy/vikunja
 read -rp "Nginx username: " NGINX_USER
 read -rsp "Nginx password: " NGINX_PASSWORD
 printf '\n'
 printf '%s:%s\n' "$NGINX_USER" "$(openssl passwd -apr1 "$NGINX_PASSWORD")" > deploy/nginx/.htpasswd
 unset NGINX_PASSWORD
+touch deploy/vikunja/api-token
 ```
+
+After the first Vikunja user and API token are created, put that token in `deploy/vikunja/api-token` and set `VIKUNJA_DEFAULT_PROJECT_ID` to the project Hermes Home should use for captured todos. Until then, the stack still starts, but todo actions will report that Vikunja is not fully configured.
 
 ```bash
 docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml up -d --build
@@ -81,7 +86,7 @@ bin/hermes-home-restart
 Inspect logs:
 
 ```bash
-docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml logs -f app nginx
+docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml logs -f app nginx vikunja
 ```
 
 Run the deployment self-check:

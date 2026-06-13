@@ -10,23 +10,38 @@ def read(path: str) -> str:
     return (ROOT / path).read_text()
 
 
-def test_production_compose_wires_http_nginx_app_and_postgres() -> None:
+def test_production_compose_wires_http_nginx_app_postgres_and_internal_vikunja() -> None:
     text = read("deploy/compose.prod.yml")
 
     assert "postgres:" in text
     assert "pgvector/pgvector:pg16" in text
+    assert "vikunja-postgres:" in text
+    assert "POSTGRES_DB: ${VIKUNJA_POSTGRES_DB:-vikunja}" in text
+    assert "vikunja:" in text
+    assert "image: vikunja/vikunja:${VIKUNJA_IMAGE_TAG:-latest}" in text
+    assert "VIKUNJA_DATABASE_TYPE: postgres" in text
+    assert "VIKUNJA_DATABASE_HOST: vikunja-postgres" in text
+    assert "VIKUNJA_SERVICE_SECRET: ${VIKUNJA_SERVICE_SECRET:?VIKUNJA_SERVICE_SECRET is required}" in text
+    assert "vikunja-files:" in text
+    assert "/app/vikunja/files" in text
+    vikunja_block = text.split("  vikunja:", 1)[1].split("\n  nginx:", 1)[0]
+    assert "ports:" not in vikunja_block
     assert "app:" in text
     assert "build:" in text
     assert "context: .." in text
     assert "dockerfile: server/Dockerfile" in text
     assert "DATABASE_URL: postgresql+psycopg://" in text
+    assert "VIKUNJA_URL: ${VIKUNJA_URL:-http://vikunja:3456}" in text
+    assert "VIKUNJA_TOKEN_FILE: ${VIKUNJA_TOKEN_FILE:-/run/secrets/vikunja_api_token}" in text
     assert "nginx:" in text
     assert "dockerfile: web/Dockerfile" in text
     assert "${HTTP_PORT:-80}:80" in text
     assert "app:" in text and "condition: service_healthy" in text
     assert "postgres-data:" in text
+    assert "vikunja-postgres-data:" in text
     assert "${OBSIDIAN_VAULT_HOST_PATH:-./data/obsidian-vault}:/data/obsidian-vault" in text
     assert "${NGINX_HTPASSWD_HOST_PATH:-./nginx/.htpasswd}:/etc/nginx/auth/.htpasswd:ro" in text
+    assert "${VIKUNJA_API_TOKEN_FILE_HOST_PATH:-./vikunja/api-token}:/run/secrets/vikunja_api_token:ro" in text
     assert "HOME_API_TOKEN: ${HOME_API_TOKEN:?HOME_API_TOKEN is required}" in text
     assert "NGINX_BASIC_AUTH_REALM: ${NGINX_BASIC_AUTH_REALM:-Hermes Home}" in text
 
@@ -68,23 +83,26 @@ def test_production_env_example_and_restart_helper_are_operator_ready() -> None:
 
     assert "HOME_API_TOKEN=change-me" in env
     assert "POSTGRES_PASSWORD=change-me" in env
+    assert "VIKUNJA_POSTGRES_PASSWORD=change-me" in env
+    assert "VIKUNJA_SERVICE_SECRET=change-me" in env
     assert "HTTP_PORT=80" in env
     assert "VITE_API_BASE=" in env
     assert "OBSIDIAN_VAULT_HOST_PATH=./data/obsidian-vault" in env
     assert "NGINX_HTPASSWD_HOST_PATH=./nginx/.htpasswd" in env
     assert "NGINX_BASIC_AUTH_REALM=Hermes Home" in env
     assert "AGENT_CMD=" in env
-    assert "VIKUNJA_URL=" in env
-    assert "VIKUNJA_TOKEN=" in env
-    assert "VIKUNJA_DEFAULT_PROJECT_ID=" in env
+    assert "VIKUNJA_URL=http://vikunja:3456" in env
+    assert "VIKUNJA_TOKEN_FILE=/run/secrets/vikunja_api_token" in env
+    assert "VIKUNJA_API_TOKEN_FILE_HOST_PATH=./vikunja/api-token" in env
+    assert "VIKUNJA_DEFAULT_PROJECT_ID=1" in env
 
     assert "docker compose" in restart
     assert 'ENV_FILE="${HERMES_HOME_PROD_ENV_FILE:-deploy/.env.production}"' in restart
     assert 'COMPOSE_FILE="${HERMES_HOME_PROD_COMPOSE_FILE:-deploy/compose.prod.yml}"' in restart
     assert '--env-file "$ENV_FILE"' in restart
     assert '-f "$COMPOSE_FILE"' in restart
-    assert "up -d --build --force-recreate app nginx" in restart
-    assert "logs --tail=80 app nginx" in restart
+    assert "up -d --build --force-recreate app nginx vikunja" in restart
+    assert "logs --tail=80 app nginx vikunja" in restart
 
 
 def test_docs_describe_unified_http_stack_commands() -> None:
@@ -95,11 +113,15 @@ def test_docs_describe_unified_http_stack_commands() -> None:
     assert "cp deploy/.env.production.example deploy/.env.production" in readme
     assert "openssl passwd -apr1" in readme
     assert "docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml up -d --build" in readme
+    assert "vikunja:3456" in readme
+    assert "Vikunja stays internal to the Compose network" in readme
     assert "bin/hermes-home-restart" in readme
     assert "--expect-nginx-injection" in readme
 
     assert "Unified HTTP Docker Compose Deployment" in handoff
     assert "deploy/compose.prod.yml" in handoff
     assert "nginx" in handoff
+    assert "vikunja" in handoff
+    assert "internal to the Compose network" in handoff
     assert "Basic Auth" in handoff
     assert "HTTPS can be added later" in handoff

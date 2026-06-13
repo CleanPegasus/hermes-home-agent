@@ -18,7 +18,7 @@ The required v1 smoke test is:
 ## Assumptions
 
 - Server already has Hermes installed and able to run a named or dedicated `home` profile.
-- Server has a Vikunja instance and an API token with task read/write access.
+- Server can run the local Vikunja service in the production Compose stack, or has an external Vikunja instance and an API token with task read/write access.
 - Server has Docker Compose.
 - Server has Python 3.12+ and Node 20+ available on the host.
 - Server is reachable over a private network or tailnet. Do not expose this app publicly without adding the deployment's normal auth, TLS, and firewall controls.
@@ -127,29 +127,34 @@ path = Path("deploy/.env.production")
 text = path.read_text()
 text = text.replace("HOME_API_TOKEN=change-me", f"HOME_API_TOKEN={secrets.token_urlsafe(32)}")
 text = text.replace("POSTGRES_PASSWORD=change-me", f"POSTGRES_PASSWORD={secrets.token_urlsafe(32)}")
+text = text.replace("VIKUNJA_POSTGRES_PASSWORD=change-me", f"VIKUNJA_POSTGRES_PASSWORD={secrets.token_urlsafe(32)}")
+text = text.replace("VIKUNJA_SERVICE_SECRET=change-me", f"VIKUNJA_SERVICE_SECRET={secrets.token_urlsafe(32)}")
 path.write_text(text)
 PY
 ```
 
-Set `PUBLIC_BASE_URL` and `CORS_ORIGINS` to the HTTP origin users will open, for example `http://<vps-ip>` or `http://home.example.com`. Keep `VITE_API_BASE=` empty; nginx makes browser API calls same-origin. Fill in Vikunja values and set `OBSIDIAN_VAULT_HOST_PATH` to the host folder that should be mounted at `/data/obsidian-vault` inside the app container. If `AGENT_CMD` is set, it must point to a command available inside the app container; leave it empty for fallback-mode smoke tests.
+Set `PUBLIC_BASE_URL` and `CORS_ORIGINS` to the HTTP origin users will open, for example `http://<vps-ip>` or `http://home.example.com`. Keep `VITE_API_BASE=` empty; nginx makes browser API calls same-origin. The production compose file also starts a local Vikunja service and its own Postgres database. Vikunja stays internal to the Compose network at `http://vikunja:3456`; nginx does not expose the Vikunja UI or API. Set `OBSIDIAN_VAULT_HOST_PATH` to the host folder that should be mounted at `/data/obsidian-vault` inside the app container. If `AGENT_CMD` is set, it must point to a command available inside the app container; leave it empty for fallback-mode smoke tests.
 
-Create the nginx Basic Auth password file. Nginx validates this browser-facing username/password and injects the app bearer token upstream, so browser users do not need to know `HOME_API_TOKEN`.
+Create the nginx Basic Auth password file and the host-side Vikunja token file path. Nginx validates this browser-facing username/password and injects the app bearer token upstream, so browser users do not need to know `HOME_API_TOKEN`.
 
 ```bash
-mkdir -p deploy/nginx deploy/data/obsidian-vault
+mkdir -p deploy/nginx deploy/data/obsidian-vault deploy/vikunja
 read -rp "Nginx username: " NGINX_USER
 read -rsp "Nginx password: " NGINX_PASSWORD
 printf '\n'
 printf '%s:%s\n' "$NGINX_USER" "$(openssl passwd -apr1 "$NGINX_PASSWORD")" > deploy/nginx/.htpasswd
 unset NGINX_PASSWORD
+touch deploy/vikunja/api-token
 ```
+
+After the first Vikunja user and API token are created, put that token in `deploy/vikunja/api-token` and set `VIKUNJA_DEFAULT_PROJECT_ID` to the project Hermes Home should use for captured todos. Until then, the stack starts, but todo actions report that Vikunja is not fully configured.
 
 Start the whole stack:
 
 ```bash
 docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml up -d --build
 docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml ps
-docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml logs --tail=100 app nginx
+docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml logs --tail=100 app nginx vikunja
 ```
 
 Restart after code or env changes:
