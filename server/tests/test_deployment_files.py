@@ -10,7 +10,7 @@ def read(path: str) -> str:
     return (ROOT / path).read_text()
 
 
-def test_production_compose_wires_http_nginx_app_postgres_and_internal_vikunja() -> None:
+def test_production_compose_wires_http_nginx_app_webapp_postgres_and_internal_vikunja() -> None:
     text = read("deploy/compose.prod.yml")
 
     assert "postgres:" in text
@@ -33,10 +33,16 @@ def test_production_compose_wires_http_nginx_app_postgres_and_internal_vikunja()
     assert "DATABASE_URL: postgresql+psycopg://" in text
     assert "VIKUNJA_URL: ${VIKUNJA_URL:-http://vikunja:3456}" in text
     assert "VIKUNJA_TOKEN_FILE: ${VIKUNJA_TOKEN_FILE:-/run/secrets/vikunja_api_token}" in text
-    assert "nginx:" in text
+    assert "webapp:" in text
     assert "dockerfile: web/Dockerfile" in text
+    webapp_block = text.split("  webapp:", 1)[1].split("\n  nginx:", 1)[0]
+    assert "ports:" not in webapp_block
+    assert "HOME_API_TOKEN" not in webapp_block
+    assert "nginx:" in text
+    assert "dockerfile: deploy/nginx/Dockerfile" in text
     assert "${HTTP_PORT:-80}:80" in text
     assert "app:" in text and "condition: service_healthy" in text
+    assert "webapp:" in text and "condition: service_healthy" in text
     assert "postgres-data:" in text
     assert "vikunja-postgres-data:" in text
     assert "${OBSIDIAN_VAULT_HOST_PATH:-./data/obsidian-vault}:/data/obsidian-vault" in text
@@ -46,23 +52,26 @@ def test_production_compose_wires_http_nginx_app_postgres_and_internal_vikunja()
     assert "NGINX_BASIC_AUTH_REALM: ${NGINX_BASIC_AUTH_REALM:-Hermes Home}" in text
 
 
-def test_nginx_serves_spa_proxies_api_and_enforces_basic_auth() -> None:
+def test_nginx_proxies_webapp_and_api_while_enforcing_basic_auth() -> None:
     text = read("deploy/nginx/default.conf.template")
 
     assert "listen 80" in text
     assert 'auth_basic "${NGINX_BASIC_AUTH_REALM}"' in text
     assert "auth_basic_user_file /etc/nginx/auth/.htpasswd" in text
-    assert "root /usr/share/nginx/html" in text
-    assert "try_files $uri $uri/ /index.html" in text
     assert "location /api/" in text
     assert "proxy_pass http://app:8000" in text
     assert "proxy_buffering off" in text
     assert 'proxy_set_header Authorization "Bearer ${HOME_API_TOKEN}"' in text
+    assert "location /" in text
+    assert "proxy_pass http://webapp:80" in text
+    assert 'proxy_set_header Authorization ""' in text
 
 
 def test_runtime_dockerfiles_build_api_and_static_web() -> None:
     server = read("server/Dockerfile")
     web = read("web/Dockerfile")
+    edge_nginx = read("deploy/nginx/Dockerfile")
+    web_nginx = read("web/nginx/default.conf")
 
     assert "FROM python:3.14-slim" in server
     assert 'CMD ["python", "-m", "uvicorn", "app.main:create_app"' in server
@@ -73,8 +82,11 @@ def test_runtime_dockerfiles_build_api_and_static_web() -> None:
     assert "VITE_API_BASE=" in web
     assert "npm run build" in web
     assert "FROM nginx:" in web
-    assert "COPY deploy/nginx/default.conf.template /etc/nginx/templates/default.conf.template" in web
+    assert "COPY web/nginx/default.conf /etc/nginx/conf.d/default.conf" in web
     assert "COPY --from=build /app/web/dist /usr/share/nginx/html" in web
+    assert "root /usr/share/nginx/html" in web_nginx
+    assert "try_files $uri $uri/ /index.html" in web_nginx
+    assert "COPY deploy/nginx/default.conf.template /etc/nginx/templates/default.conf.template" in edge_nginx
 
 
 def test_production_env_example_and_restart_helper_are_operator_ready() -> None:
@@ -101,8 +113,8 @@ def test_production_env_example_and_restart_helper_are_operator_ready() -> None:
     assert 'COMPOSE_FILE="${HERMES_HOME_PROD_COMPOSE_FILE:-deploy/compose.prod.yml}"' in restart
     assert '--env-file "$ENV_FILE"' in restart
     assert '-f "$COMPOSE_FILE"' in restart
-    assert "up -d --build --force-recreate app nginx vikunja" in restart
-    assert "logs --tail=80 app nginx vikunja" in restart
+    assert "up -d --build --force-recreate app webapp nginx vikunja" in restart
+    assert "logs --tail=80 app webapp nginx vikunja" in restart
 
 
 def test_docs_describe_unified_http_stack_commands() -> None:
@@ -114,6 +126,7 @@ def test_docs_describe_unified_http_stack_commands() -> None:
     assert "openssl passwd -apr1" in readme
     assert "docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml up -d --build" in readme
     assert "vikunja:3456" in readme
+    assert "webapp" in readme
     assert "Vikunja stays internal to the Compose network" in readme
     assert "bin/hermes-home-restart" in readme
     assert "--expect-nginx-injection" in readme
@@ -121,6 +134,7 @@ def test_docs_describe_unified_http_stack_commands() -> None:
     assert "Unified HTTP Docker Compose Deployment" in handoff
     assert "deploy/compose.prod.yml" in handoff
     assert "nginx" in handoff
+    assert "webapp" in handoff
     assert "vikunja" in handoff
     assert "internal to the Compose network" in handoff
     assert "Basic Auth" in handoff

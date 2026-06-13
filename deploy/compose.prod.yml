@@ -88,10 +88,22 @@ services:
       retries: 10
       start_period: 20s
 
-  nginx:
+  webapp:
     build:
       context: ..
       dockerfile: web/Dockerfile
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  nginx:
+    build:
+      context: ..
+      dockerfile: deploy/nginx/Dockerfile
     restart: unless-stopped
     environment:
       HOME_API_TOKEN: ${HOME_API_TOKEN:?HOME_API_TOKEN is required}
@@ -102,6 +114,8 @@ services:
       - ${NGINX_HTPASSWD_HOST_PATH:-./nginx/.htpasswd}:/etc/nginx/auth/.htpasswd:ro
     depends_on:
       app:
+        condition: service_healthy
+      webapp:
         condition: service_healthy
 
 volumes:

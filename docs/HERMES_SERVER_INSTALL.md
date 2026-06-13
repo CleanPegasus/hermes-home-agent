@@ -108,11 +108,12 @@ Expected: JSON with seeded `jobs`, `todos`, `calendar`, `notes`, `approvals`, an
 
 ## Unified HTTP Docker Compose Deployment
 
-For a single VPS deployment, prefer the production Compose stack instead of running the API and web app separately. It starts:
+For a single VPS deployment, prefer the production Compose stack instead of manually running the API and web app outside Docker. It starts:
 
 - `postgres`: pgvector Postgres with a persistent `postgres-data` volume.
 - `app`: the FastAPI server image built from `server/Dockerfile`.
-- `nginx`: the web image built from `web/Dockerfile`, serving the built PWA and proxying `/api/` to `app:8000`.
+- `webapp`: the static web image built from `web/Dockerfile`, serving the built PWA inside the Compose network.
+- `nginx`: the public edge image built from `deploy/nginx/Dockerfile`, proxying `/` to `webapp:80` and `/api/` to `app:8000`.
 
 Copy and edit the production env file:
 
@@ -154,7 +155,7 @@ Start the whole stack:
 ```bash
 docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml up -d --build
 docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml ps
-docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml logs --tail=100 app nginx vikunja
+docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml logs --tail=100 app webapp nginx vikunja
 ```
 
 Restart after code or env changes:
@@ -200,6 +201,8 @@ bin/hermes-deployment-self-check --base-url http://127.0.0.1:${SERVER_PORT:-8000
 Expected: `ok: True` and no `fail` rows. This checks non-default API token state, Codex production gating, database kind, agent configuration, connector setup, and whether the upstream app receives a bearer `Authorization` header.
 
 ## Build And Serve The Web App
+
+The unified Compose stack builds and serves this through the `webapp` service. Use this manual path only for a separate static-site deployment.
 
 Build the PWA:
 
@@ -435,7 +438,7 @@ docker compose exec postgres pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
 
 If the PWA loads but API calls fail:
 
-- For same-origin nginx, confirm the web app was rebuilt with `VITE_API_BASE=` so requests go to `/api/...` on the public origin.
+- For same-origin nginx, confirm the `webapp` service was rebuilt with `VITE_API_BASE=` so requests go to `/api/...` on the public origin.
 - Confirm nginx applies `auth_basic` to `/api/` and sets `Authorization: Bearer <HOME_API_TOKEN>` only when proxying upstream.
 - Confirm `curl -u '<user>:<password>' http://<public-host-or-ip>/api/session` returns JSON.
 - For separate-origin local development, confirm `VITE_API_BASE` was set before `npm run build`, `CORS_ORIGINS` includes the PWA origin, and the browser has the correct token in localStorage key `HOME_API_TOKEN`.
@@ -456,10 +459,7 @@ Rollback is:
 cd /opt/hermes-home
 git fetch origin
 git checkout <last-known-good-ref>
-docker compose up -d app
-cd web
-npm ci
-VITE_API_BASE= npm run build
+docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml up -d --build app webapp nginx
 ```
 
 Then rerun the end-to-end smoke test.

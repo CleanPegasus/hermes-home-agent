@@ -36,7 +36,7 @@ Open `http://127.0.0.1:5173/`.
 
 ## Unified HTTP deployment
 
-The VPS deployment runs Postgres, the FastAPI app, the built PWA, and nginx from one Compose file. Nginx serves the web app on port `80` and proxies `/api/` to the app container, so keep `VITE_API_BASE=` empty for same-origin browser requests.
+The VPS deployment runs Postgres, the FastAPI app, a dedicated `webapp` container for the built PWA, and an edge `nginx` container from one Compose file. Nginx serves public traffic on port `80`, proxies `/` to `webapp`, and proxies `/api/` to the app container, so keep `VITE_API_BASE=` empty for same-origin browser requests.
 
 Create production env values:
 
@@ -77,7 +77,7 @@ docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml up -
 docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml ps
 ```
 
-Restart the app and nginx after code or env changes:
+Restart the app, webapp, and nginx after code or env changes:
 
 ```bash
 bin/hermes-home-restart
@@ -86,7 +86,7 @@ bin/hermes-home-restart
 Inspect logs:
 
 ```bash
-docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml logs -f app nginx vikunja
+docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml logs -f app webapp nginx vikunja
 ```
 
 Run the deployment self-check:

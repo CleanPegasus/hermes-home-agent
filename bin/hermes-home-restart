@@ -13,6 +13,6 @@ if [[ ! -f "$ENV_FILE" ]]; then
   exit 1
 fi
 
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --build --force-recreate app nginx vikunja
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --build --force-recreate app webapp nginx vikunja
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs --tail=80 app nginx vikunja
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs --tail=80 app webapp nginx vikunja
