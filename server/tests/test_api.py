@@ -603,9 +603,9 @@ def test_agent_environment_includes_profile_vars(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setenv("DATABASE_URL", "sqlite:///tmp.db")
     monkeypatch.setenv("HOME_API_TOKEN", "token-1")
     monkeypatch.setenv("OBSIDIAN_VAULT_PATH", "/srv/hermes/vault")
-    job = Job(id="job-1", command="write code", status="queued")
+    job = Job(id="00000000-0000-0000-0000-000000000001", command="write code", status="queued")
     profile = AgentProfile(
-        id="profile-1",
+        id="00000000-0000-0000-0000-000000000002",
         slug="coding",
         name="coding agent",
         emoji="💻",
@@ -616,9 +616,9 @@ def test_agent_environment_includes_profile_vars(monkeypatch: pytest.MonkeyPatch
 
     env = agent_environment(job, profile)
 
-    assert env["HERMES_HOME_JOB_ID"] == "job-1"
+    assert env["HERMES_HOME_JOB_ID"] == "00000000000000000000000000000001"
     assert env["HERMES_HOME_COMMAND"] == "write code"
-    assert env["HERMES_HOME_PROFILE_ID"] == "profile-1"
+    assert env["HERMES_HOME_PROFILE_ID"] == "00000000-0000-0000-0000-000000000002"
     assert env["HERMES_HOME_PROFILE_NAME"] == "coding agent"
     assert env["HERMES_HOME_PROFILE_PERSONA"] == "Prefer precise implementation notes."
     assert env["OBSIDIAN_VAULT_PATH"] == "/srv/hermes/vault"
@@ -630,11 +630,12 @@ def test_agent_environment_absolutizes_relative_sqlite_database_url(tmp_path: Pa
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("DATABASE_URL", "sqlite:///./hermes-home-dev.db")
-    job = Job(id="job-1", command="write code", status="queued")
+    job = Job(id="00000000-0000-0000-0000-000000000001", command="write code", status="queued")
 
     env = agent_environment(job)
 
     assert env["DATABASE_URL"] == f"sqlite:///{tmp_path / 'hermes-home-dev.db'}"
+    assert env["HERMES_HOME_JOB_ID"] == "00000000000000000000000000000001"
 
 
 @pytest.mark.anyio
@@ -1029,7 +1030,7 @@ async def test_expired_approval_cannot_execute(tmp_path: Path) -> None:
 
     with app.state.session_factory() as session:
         approval = Approval(
-            job_id="job-expired",
+            job_id="00000000-0000-0000-0000-000000000001",
             action="calendar.create_event",
             scope={"summary": "expired event"},
             expires_at=datetime.now(timezone.utc) - timedelta(minutes=1),
@@ -1196,6 +1197,17 @@ def test_schema_files_cover_sqlalchemy_and_mcp_columns() -> None:
         assert expected <= schema_columns(mcp_schema, table_name), table_name
 
 
+def test_postgres_uuid_columns_use_sqlalchemy_uuid_type() -> None:
+    from sqlalchemy import Uuid
+
+    from app.models import Base
+
+    postgres_schema = (Path(__file__).resolve().parents[2] / "db" / "schema.sql").read_text()
+    for table_name, column_name in schema_uuid_columns(postgres_schema):
+        column_type = Base.metadata.tables[table_name].columns[column_name].type
+        assert isinstance(column_type, Uuid), f"{table_name}.{column_name}"
+
+
 def load_mcp_module():
     module_path = Path(__file__).resolve().parents[2] / "mcp" / "hermes_home_mcp" / "server.py"
     spec = importlib.util.spec_from_file_location("hermes_home_mcp_schema_test_server", module_path)
@@ -1226,4 +1238,23 @@ def schema_columns(schema: str, table_name: str) -> set[str]:
             "UNIQUE",
         }:
             columns.add(name)
+    return columns
+
+
+def schema_uuid_columns(schema: str) -> set[tuple[str, str]]:
+    matches = re.finditer(
+        r"CREATE TABLE IF NOT EXISTS\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*?)\)\s*(?:;|$)",
+        schema,
+        re.IGNORECASE | re.DOTALL,
+    )
+    columns: set[tuple[str, str]] = set()
+    for match in matches:
+        table_name = match.group(1)
+        for raw_line in match.group(2).splitlines():
+            line = raw_line.strip().rstrip(",")
+            if not line or line.startswith("--"):
+                continue
+            parts = line.split(None, 2)
+            if len(parts) >= 2 and parts[1].upper() == "UUID":
+                columns.add((table_name, parts[0].strip('"')))
     return columns

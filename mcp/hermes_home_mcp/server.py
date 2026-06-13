@@ -8,7 +8,7 @@ import importlib.util
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 
@@ -343,11 +343,21 @@ def sqlite_path(url: str | None = None) -> str:
 
 def current_job_id() -> str | None:
     value = os.getenv("HERMES_HOME_JOB_ID", "").strip()
-    return value or None
+    if not value:
+        return None
+    return sqlite_uuid_storage_value(value) if is_sqlite_url() else value
 
 
 def new_id() -> str:
-    return str(uuid4())
+    value = uuid4()
+    return value.hex if is_sqlite_url() else str(value)
+
+
+def sqlite_uuid_storage_value(value: str) -> str:
+    try:
+        return UUID(str(value)).hex
+    except ValueError:
+        return value
 
 
 def dumps_json(value: Any) -> str:

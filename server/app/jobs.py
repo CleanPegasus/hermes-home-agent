@@ -7,6 +7,7 @@ import subprocess
 from dataclasses import dataclass
 from datetime import datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
+from uuid import UUID
 
 from sqlalchemy import desc, func, select
 from sqlalchemy.engine import make_url
@@ -179,8 +180,9 @@ def invoke_external_agent(session: Session, job: Job, agent_cmd: str) -> None:
 
 def agent_environment(job: Job, profile: AgentProfile | None = None) -> dict[str, str]:
     env = os.environ.copy()
-    env["DATABASE_URL"] = normalize_agent_database_url(env.get("DATABASE_URL", "sqlite:///./hermes-home.db"))
-    env["HERMES_HOME_JOB_ID"] = job.id
+    database_url = normalize_agent_database_url(env.get("DATABASE_URL", "sqlite:///./hermes-home.db"))
+    env["DATABASE_URL"] = database_url
+    env["HERMES_HOME_JOB_ID"] = sqlite_uuid_storage_value(job.id) if is_sqlite_database_url(database_url) else job.id
     env["HERMES_HOME_COMMAND"] = job.command
     if os.getenv("OBSIDIAN_VAULT_PATH"):
         env["OBSIDIAN_VAULT_PATH"] = os.getenv("OBSIDIAN_VAULT_PATH", "")
@@ -189,6 +191,20 @@ def agent_environment(job: Job, profile: AgentProfile | None = None) -> dict[str
         env["HERMES_HOME_PROFILE_NAME"] = profile.name
         env["HERMES_HOME_PROFILE_PERSONA"] = profile.persona
     return env
+
+
+def is_sqlite_database_url(database_url: str) -> bool:
+    try:
+        return make_url(database_url).drivername.startswith("sqlite")
+    except Exception:
+        return database_url.startswith("sqlite:")
+
+
+def sqlite_uuid_storage_value(value: str) -> str:
+    try:
+        return UUID(str(value)).hex
+    except ValueError:
+        return value
 
 
 def normalize_agent_database_url(database_url: str) -> str:
@@ -384,7 +400,7 @@ def handle_action(session: Session, action: str, payload: dict) -> dict:
         return result
 
     if action == "approvals.request":
-        job_id = str(payload.get("job_id", ""))
+        job_id = str(payload.get("job_id") or "").strip() or None
         approval = Approval(
             job_id=job_id,
             action=str(payload.get("action_name", "unknown")),
