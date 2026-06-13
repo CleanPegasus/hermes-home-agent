@@ -17,7 +17,8 @@ Included:
 - Extract structured note fields: title, body, Obsidian category, tags, and duplicate-search query.
 - Run `agent_job` commands immediately in the current job.
 - Ask a focused clarification question when the intent or required fields are uncertain.
-- Publish exactly one durable result page for clear commands and clarification prompts.
+- Publish a durable result page only for `agent_job` work.
+- Complete todo, note, and non-agent mixed commands with a lightweight job summary instead of a generated page.
 
 Excluded:
 
@@ -75,7 +76,7 @@ Execution:
 4. Convert natural-language dates into RFC3339 using the user's timezone.
 5. Call `todos_create`.
 6. Refresh the todos tile through existing tool behavior.
-7. Publish a result page summarizing what was created.
+7. Mark the job done with a concise summary of the created todo. Do not publish a generated page.
 
 Clarify before writing if:
 
@@ -97,7 +98,7 @@ Execution:
 5. Call `notes_append` if a matching note already captures the fact.
 6. Call `notes_create` if no suitable note exists.
 7. Refresh the notes tile through existing tool behavior.
-8. Publish a result page summarizing what was saved.
+8. Mark the job done with a concise summary of the saved or updated note. Do not publish a generated page.
 
 Clarify before writing if:
 
@@ -129,7 +130,7 @@ Execution:
 1. Split the command into independent intents.
 2. Apply the relevant todo, note, and agent job rules to each part.
 3. If every part is clear, execute all clear parts in one job.
-4. Publish one result page summarizing all writes and work.
+4. Publish a result page only if the mixed command includes an `agent_job` part. If the command only creates or updates todos and notes, finish with a lightweight job summary and no page.
 
 Clarify before writing if any part is ambiguous or if executing only the clear parts would surprise the user.
 
@@ -143,13 +144,25 @@ Rules:
 - Ask one focused question.
 - Prefer two to four concrete choices when possible.
 - Preserve the original command and Hermes's draft interpretation.
-- Let the user answer from the app and resume the original job context.
+- Let the user answer from the app and resume the original job context. Do not publish a generated page for the clarification prompt.
 
 Examples:
 
 - "milk tomorrow" -> "Should I add this as a todo, or save a note?"
 - "remember to call Sam" -> "Should this be a todo with a deadline, or a note?"
 - "send the thing to Priya" -> "What should I send?"
+
+## Completion UX
+
+Todo, note, and non-agent mixed commands should not open generated pages. They should end with job status `done`, a short `emoji` and `summary`, and relevant job events. The web app should treat `done` without `page_id` as a successful completion rather than an error.
+
+The preferred UI after a successful non-page job is:
+
+- Show a compact completion state with the job summary.
+- Offer one-click navigation to the relevant surface, such as todos, notes, or history.
+- Leave the command available in history for audit and retry.
+
+Agent jobs remain page-oriented. A successful `agent_job` should publish a generated page because the result is usually a report, analysis, or artifact that needs space.
 
 ## Clarification UX
 
@@ -172,7 +185,7 @@ When the user answers, the server should create a follow-up job that includes:
 - User answer.
 - Draft fields from the first routing attempt.
 
-The follow-up job then runs Hermes again and publishes the final result page.
+The follow-up job then runs Hermes again. It publishes a final page only if the clarified intent is `agent_job`; todo and note outcomes finish with a lightweight job summary.
 
 ## Agent Prompt Contract
 
@@ -183,11 +196,12 @@ The `AGENT_CMD` entrypoint should instruct Hermes to:
 3. Use the local Hermes Home skills:
    - `manage-todos` for todo commands.
    - `categorize-notes` for note commands.
-   - `deliver-as-page` for every completed command.
+   - `deliver-as-page` only for `agent_job` commands.
    - `keep-tiles-fresh` after state changes.
 4. Ask clarification before writes if classification confidence is low.
 5. Emit short job events at major steps.
-6. Publish exactly one page for completed commands.
+6. Publish exactly one page for completed `agent_job` commands.
+7. Finish todo, note, and non-agent mixed commands with `job_set_summary` and no `pages_publish`.
 
 The prompt should define `agent_job` as immediate work only.
 
@@ -201,8 +215,8 @@ bottom bar -> POST /api/command -> Job
   -> router: todo
   -> todos_projects_list, todos_labels_list
   -> todos_create
-  -> pages_publish
-  -> web opens /page/:id
+  -> job_set_summary
+  -> web shows compact completion and links to todos
 ```
 
 Clear note:
@@ -213,8 +227,8 @@ bottom bar -> POST /api/command -> Job
   -> router: note
   -> categories_list, notes_search
   -> notes_create or notes_append
-  -> pages_publish
-  -> web opens /page/:id
+  -> job_set_summary
+  -> web shows compact completion and links to notes
 ```
 
 Immediate agent job:
@@ -240,12 +254,13 @@ bottom bar -> POST /api/command -> Job
   -> web shows question
   -> user answers
   -> follow-up Job runs with answer included
+  -> page only if resolved intent is agent_job
 ```
 
 ## Error Handling
 
-- If Vikunja is not configured, todo execution should fail cleanly with a result page or job error explaining the missing configuration.
-- If Obsidian is not configured, note execution should fail cleanly with a result page or job error explaining `OBSIDIAN_VAULT_PATH`.
+- If Vikunja is not configured, todo execution should fail cleanly with a job error explaining the missing configuration.
+- If Obsidian is not configured, note execution should fail cleanly with a job error explaining `OBSIDIAN_VAULT_PATH`.
 - If Hermes cannot classify the command, it should request clarification rather than fail.
 - If an agent job requires unavailable tools or inaccessible data, it should publish a page that names what was skipped or inaccessible.
 - If the clarification answer is empty, the API should reject it with a validation error and keep the job in `needs_clarification`.
@@ -259,6 +274,7 @@ Backend tests:
 - Answering a clarification creates a follow-up job with original command and answer context.
 - Job serialization includes `needs_clarification`.
 - Existing `needs_approval`, `done`, `failed`, and `cancelled` behavior still works.
+- `done` jobs without `page_id` serialize as successful completions.
 
 MCP tests:
 
@@ -272,6 +288,7 @@ Frontend tests:
 - Job detail renders clarification question and choices.
 - Submitting an answer creates or opens the follow-up job.
 - The bottom command bar still submits plain commands without routing logic in the browser.
+- A `done` job without `page_id` shows a successful compact completion, not the "didn't finish" error screen.
 
 Agent contract tests:
 
@@ -279,11 +296,12 @@ Agent contract tests:
 - Note examples search before writing and choose categories.
 - Ambiguous examples request clarification without writes.
 - Agent-job examples run immediately and publish a result page.
+- Todo and note examples finish without calling `pages_publish`.
 
 ## Acceptance Criteria
 
-- A clear todo command creates a Vikunja todo with inferred metadata and opens a result page.
-- A clear note command writes or appends an Obsidian note with inferred category and tags and opens a result page.
+- A clear todo command creates a Vikunja todo with inferred metadata and finishes without a generated page.
+- A clear note command writes or appends an Obsidian note with inferred category and tags and finishes without a generated page.
 - A clear agent-job command runs immediately and opens a result page.
 - An ambiguous command asks one clarification question and performs no todo or note write before the answer.
 - Answering a clarification resumes the command through a follow-up job.
