@@ -10,7 +10,7 @@ RUN VITE_API_BASE= npm run build
 
 FROM nginx:1.27-alpine
 
-COPY deploy/nginx/default.conf.template /etc/nginx/templates/default.conf.template
+COPY web/nginx/default.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/web/dist /usr/share/nginx/html
 
 EXPOSE 80
