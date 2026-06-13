@@ -418,7 +418,7 @@ async function runCommand(text: string, profileId?: string | null): Promise<void
     visit(`/page/${encodeURIComponent(job.page_id)}`);
     return;
   }
-  if (job.status === "needs_approval") {
+  if (job.status === "done" || job.status === "needs_approval" || job.status === "needs_clarification") {
     visit(`/job/${encodeURIComponent(job.id)}`);
     return;
   }
@@ -529,7 +529,8 @@ async function showJobDetail(jobId: string): Promise<void> {
     openPage: (pageId) => visit(`/page/${encodeURIComponent(pageId)}`),
     retry: (targetJobId) => void retryJob(targetJobId),
     cancel: (targetJobId) => void cancelJob(targetJobId),
-    diagnostics: (targetJobId) => visit(`/diagnostics/${encodeURIComponent(targetJobId)}`)
+    diagnostics: (targetJobId) => visit(`/diagnostics/${encodeURIComponent(targetJobId)}`),
+    answerClarification: (clarificationId, answer) => void answerClarification(clarificationId, answer)
   })));
   rootElement.querySelector(".detail-screen")?.append(renderFollowUpForm("job", `continue job ${jobId}: `));
 }
@@ -726,6 +727,15 @@ async function cancelJob(jobId: string): Promise<void> {
     await showJobDetail(jobId);
   } catch (error) {
     toast(error instanceof Error ? error.message : "couldn't cancel job", "error");
+  }
+}
+
+async function answerClarification(clarificationId: string, answer: string): Promise<void> {
+  try {
+    const { job_id } = await api.answerClarification(clarificationId, answer);
+    visit(`/job/${encodeURIComponent(job_id)}`);
+  } catch (error) {
+    toast(error instanceof Error ? error.message : "couldn't answer clarification", "error");
   }
 }
 

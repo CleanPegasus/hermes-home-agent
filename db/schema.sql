@@ -56,7 +56,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   command TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'queued'
-    CHECK (status IN ('queued', 'running', 'done', 'failed', 'needs_approval', 'cancelled')),
+    CONSTRAINT jobs_status_check
+    CHECK (status IN ('queued', 'running', 'done', 'failed', 'needs_approval', 'needs_clarification', 'cancelled')),
   page_id UUID,
   error TEXT,
   stdout_tail TEXT,
@@ -70,6 +71,22 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 
 CREATE INDEX IF NOT EXISTS jobs_status_started_at_idx ON jobs (status, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS clarifications (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  job_id UUID NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  question TEXT NOT NULL,
+  choices JSONB NOT NULL DEFAULT '[]'::jsonb,
+  draft JSONB NOT NULL DEFAULT '{}'::jsonb,
+  answer TEXT,
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'answered')),
+  follow_up_job_id UUID REFERENCES jobs(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  answered_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS clarifications_job_status_idx ON clarifications (job_id, status);
 
 CREATE TABLE IF NOT EXISTS agent_profiles (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

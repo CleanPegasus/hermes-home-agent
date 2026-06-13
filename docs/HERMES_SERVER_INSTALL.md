@@ -4,7 +4,7 @@ This document is written for the Hermes agent or operator installing Hermes Home
 
 ## Goal
 
-Install Hermes Home beside the existing Hermes agent so a phone/PWA can send commands to the app server, Hermes can use the `hermes-home-mcp` tools, todos are managed in Vikunja, and every job ends as a generated HTML page instead of a chat reply.
+Install Hermes Home beside the existing Hermes agent so a phone/PWA can send commands to the app server, Hermes can use the `hermes-home-mcp` tools, todos are managed in Vikunja, simple todo/note writes finish as job summaries, and immediate agent-job reports can end as generated HTML pages instead of chat replies.
 
 The required v1 smoke test is:
 
@@ -340,7 +340,8 @@ Pin them outside any autonomous skill curator or consolidation process. These sk
 Hermes must follow these rules in the `home` profile:
 
 - Never answer a Home command with chat prose.
-- Always call `pages_publish` before ending a job.
+- Call `pages_publish` only for immediate `agent_job` results that need a report or artifact page.
+- For todo-only and note-only commands, write state, refresh tiles, call `job_set_summary`, and finish without a page.
 - After state-changing tools, refresh the relevant tile with `tiles_update`.
 - Calendar writes must use approval flow in v1.
 
@@ -362,7 +363,7 @@ Example shape:
 AGENT_CMD=/usr/local/bin/hermes run --profile home --input-env HERMES_HOME_COMMAND
 ```
 
-Use the real Hermes CLI/API command for this server. The only hard requirement is that the invoked Hermes process reads `HERMES_HOME_COMMAND`, uses the `home` profile and `hermes-home` MCP server, and publishes through `pages_publish` before exit.
+Use the real Hermes CLI/API command for this server. The invoked Hermes process must read `HERMES_HOME_COMMAND`, use the `home` profile and `hermes-home` MCP server, ask for clarification before ambiguous writes, use `job_set_summary` for todo/note completions, and use `pages_publish` for agent-job pages.
 
 If `AGENT_CMD` is empty, the app server uses a local fallback agent. That is useful for checking the app, but it is not the real Hermes integration.
 
@@ -406,18 +407,16 @@ curl -fsS -H "Authorization: Bearer $HOME_API_TOKEN" \
 Expected:
 
 - One job reaches `done`.
-- The job has a `page_id`.
+- Todo-only jobs finish with no `page_id` and a concise job summary.
 - `job_events` includes short step logs.
-- A page exists and contains no script tags.
 - One Vikunja-backed todo is open and includes `provider: "vikunja"` plus an `external_id`.
 - The todos tile count is `1` from the refreshed Vikunja cache.
-- Clicking the generated page's `mark done` action marks the Vikunja task done and returns the todos tile count to `0`.
 
 ## Failure Modes
 
-If the job fails with `agent exited without publishing a page`:
+If an agent-job report fails with `agent exited without publishing a page`:
 
-- Hermes ran but did not call `pages_publish`.
+- Hermes ran an agent-job path but did not call `pages_publish`.
 - Confirm the `deliver-as-page` skill is installed and active.
 - Confirm the `hermes-home` MCP server is registered in the `home` profile.
 - Confirm the MCP server receives the same `DATABASE_URL` as the app server.

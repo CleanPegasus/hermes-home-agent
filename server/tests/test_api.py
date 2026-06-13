@@ -409,7 +409,7 @@ async def test_todos_degrade_when_vikunja_configuration_is_missing(tmp_path: Pat
 
 
 @pytest.mark.anyio
-async def test_command_creates_vikunja_todo_events_page_and_tile_updates(tmp_path: Path, fake_vikunja: FakeVikunja) -> None:
+async def test_command_creates_vikunja_todo_events_summary_and_tile_updates(tmp_path: Path, fake_vikunja: FakeVikunja) -> None:
     async with build_client(tmp_path, vikunja=fake_vikunja) as client:
         command_response = await client.post(
             "/api/command",
@@ -422,40 +422,31 @@ async def test_command_creates_vikunja_todo_events_page_and_tile_updates(tmp_pat
 
         job = await wait_for_job(client, job_id)
         assert job["status"] == "done"
-        assert job["page_id"] is not None
+        assert job["page_id"] is None
+        assert "buy oat milk" in job["summary"]
 
         events_response = await client.get(f"/api/jobs/{job_id}/events", headers=auth_headers())
         assert events_response.status_code == 200
         event_text = events_response.text
         assert "event: step" in event_text
         assert "reading command" in event_text
-        assert "publishing page" in event_text
+        assert "publishing page" not in event_text
+        assert "created Vikunja todo" in event_text
 
         stream_response = await client.get(f"/api/jobs/{job_id}/stream", headers=auth_headers())
         assert stream_response.status_code == 200
-        assert "publishing page" in stream_response.text
+        assert "created Vikunja todo" in stream_response.text
+        assert "publishing page" not in stream_response.text
 
         timeline_response = await client.get(f"/api/jobs/{job_id}/timeline", headers=auth_headers())
         assert timeline_response.status_code == 200
-        assert [event["text"] for event in timeline_response.json()["events"]][-1] == "publishing page"
+        assert [event["text"] for event in timeline_response.json()["events"]][-1].startswith("created Vikunja todo")
 
         diagnostics_response = await client.get(f"/api/jobs/{job_id}/diagnostics", headers=auth_headers())
         assert diagnostics_response.status_code == 200
         diagnostics = diagnostics_response.json()
-        assert diagnostics["page"]["html_bytes"] > 0
+        assert diagnostics["page"] is None
         assert diagnostics["environment"]["database"] == "sqlite"
-
-        page_response = await client.get(f"/api/pages/{job['page_id']}", headers=auth_headers())
-        assert page_response.status_code == 200
-        page = page_response.json()["page"]
-        assert "buy oat milk" in page["html"]
-        assert "<script" not in page["html"].lower()
-        assert "onclick=" not in page["html"].lower()
-        assert "data-action=\"todos.complete\"" in page["html"]
-        assert page["provenance"]["reads"][0]["type"] == "command"
-        assert any(write["type"] == "todo" for write in page["provenance"]["writes"])
-        assert any(write["type"] == "page" for write in page["provenance"]["writes"])
-        assert page["provenance"]["skipped"][0]["type"] == "external_agent"
 
         todos_response = await client.get("/api/todos", headers=auth_headers())
         assert todos_response.status_code == 200
@@ -479,7 +470,9 @@ async def test_command_creates_vikunja_todo_events_page_and_tile_updates(tmp_pat
 
 @pytest.mark.anyio
 async def test_page_action_completes_vikunja_todo_and_refreshes_tile(tmp_path: Path, fake_vikunja: FakeVikunja) -> None:
-    async with build_client(tmp_path, vikunja=fake_vikunja) as client:
+    app = build_app(tmp_path, vikunja=fake_vikunja)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         command_response = await client.post(
             "/api/command",
             headers=auth_headers(),
@@ -487,7 +480,16 @@ async def test_page_action_completes_vikunja_todo_and_refreshes_tile(tmp_path: P
         )
         job_id = command_response.json()["job_id"]
         job = await wait_for_job(client, job_id)
-        page = (await client.get(f"/api/pages/{job['page_id']}", headers=auth_headers())).json()["page"]
+        assert job["page_id"] is None
+        from app.models import Page
+
+        with app.state.session_factory() as session:
+            page_row = Page(job_id=job_id, title="todo action source", html="<p>source page</p>")
+            session.add(page_row)
+            session.commit()
+            page_id = page_row.id
+
+        page = (await client.get(f"/api/pages/{page_id}", headers=auth_headers())).json()["page"]
         todo_id = (await client.get("/api/todos", headers=auth_headers())).json()["todos"][0]["id"]
 
         response = await client.post(
@@ -735,6 +737,63 @@ async def test_external_agent_can_publish_page_after_parent_polling_starts(tmp_p
         job = await wait_for_job(client, command_response.json()["job_id"], attempts=30)
         assert job["status"] == "done"
         assert job["page_id"] is not None
+
+
+@pytest.mark.anyio
+async def test_clarification_answer_creates_follow_up_job(tmp_path: Path) -> None:
+    app = build_app(tmp_path)
+    from app.models import Clarification, Job
+
+    with app.state.session_factory() as session:
+        job = Job(command="milk tomorrow", status="needs_clarification", profile_id="profile-1")
+        session.add(job)
+        session.flush()
+        clarification = Clarification(
+            job_id=job.id,
+            question="Should I add this as a todo, or save a note?",
+            choices=["todo", "note"],
+            draft={"intent": "needs_clarification", "command": "milk tomorrow"},
+            status="pending",
+        )
+        session.add(clarification)
+        session.commit()
+        job_id = job.id
+        clarification_id = clarification.id
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        timeline_response = await client.get(f"/api/jobs/{job_id}/timeline", headers=auth_headers())
+        assert timeline_response.status_code == 200
+        timeline = timeline_response.json()
+        assert timeline["clarifications"][0]["question"] == "Should I add this as a todo, or save a note?"
+        assert timeline["clarifications"][0]["choices"] == ["todo", "note"]
+
+        get_response = await client.get(f"/api/clarifications/{clarification_id}", headers=auth_headers())
+        assert get_response.status_code == 200
+        assert get_response.json()["clarification"]["draft"]["command"] == "milk tomorrow"
+
+        empty_answer = await client.post(
+            f"/api/clarifications/{clarification_id}/answer",
+            headers=auth_headers(),
+            json={"answer": "   "},
+        )
+        assert empty_answer.status_code == 422
+
+        answer_response = await client.post(
+            f"/api/clarifications/{clarification_id}/answer",
+            headers=auth_headers(),
+            json={"answer": "todo"},
+        )
+        assert answer_response.status_code == 200
+        payload = answer_response.json()
+        assert payload["clarification"]["status"] == "answered"
+        assert payload["clarification"]["answer"] == "todo"
+        follow_up_job_id = payload["job_id"]
+
+        follow_up = (await client.get(f"/api/jobs/{follow_up_job_id}", headers=auth_headers())).json()["job"]
+        assert follow_up["profile_id"] == "profile-1"
+        assert "Original command: milk tomorrow" in follow_up["command"]
+        assert "Clarification answer: todo" in follow_up["command"]
 
 
 @pytest.mark.anyio
@@ -1156,11 +1215,48 @@ async def test_mcp_job_set_summary_updates_current_job(tmp_path: Path, monkeypat
     )
 
     result = await module.job_set_summary("📝", "wrote a useful note with enough extra words to trim")
-    row = module.fetch_one("SELECT emoji, summary FROM jobs WHERE id = :job_id", {"job_id": "job-1"})
+    row = module.fetch_one("SELECT status, emoji, summary, finished_at FROM jobs WHERE id = :job_id", {"job_id": "job-1"})
 
     assert result == {"ok": True, "job_id": "job-1"}
+    assert row["status"] == "done"
     assert row["emoji"] == "📝"
     assert row["summary"] == "wrote a useful note with enough extra words to trim"
+    assert row["finished_at"] is not None
+
+
+@pytest.mark.anyio
+async def test_mcp_clarifications_request_marks_job_without_page(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'mcp-clarification.db'}")
+    monkeypatch.setenv("HERMES_HOME_JOB_ID", "job-clarify")
+    module = load_mcp_module()
+    module.execute(
+        "INSERT INTO jobs (id, command, status) VALUES (:id, :command, :status)",
+        {"id": "job-clarify", "command": "milk tomorrow", "status": "running"},
+    )
+
+    result = await module.clarifications_request(
+        "Should I add this as a todo, or save a note?",
+        choices=["todo", "note"],
+        draft={"intent": "needs_clarification", "command": "milk tomorrow"},
+    )
+
+    job = module.fetch_one("SELECT status, page_id FROM jobs WHERE id = :job_id", {"job_id": "job-clarify"})
+    clarification = module.fetch_one("SELECT * FROM clarifications WHERE job_id = :job_id", {"job_id": "job-clarify"})
+    pages = module.fetch_all("SELECT * FROM pages WHERE job_id = :job_id", {"job_id": "job-clarify"})
+
+    assert result["needs_clarification"] is True
+    assert result["clarification"]["question"] == "Should I add this as a todo, or save a note?"
+    assert result["clarification"]["choices"] == ["todo", "note"]
+    assert result["clarification"]["draft"]["intent"] == "needs_clarification"
+    assert job["status"] == "needs_clarification"
+    assert job["page_id"] is None
+    assert clarification["status"] == "pending"
+    assert pages == []
+    assert module.clarifications_request in module.TOOLS
+
+    init_path = Path(__file__).resolve().parents[2] / "mcp" / "hermes_home_mcp" / "__init__.py"
+    init_text = init_path.read_text()
+    assert "clarifications_request" in init_text
 
 
 @pytest.mark.anyio

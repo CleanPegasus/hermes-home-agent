@@ -250,4 +250,21 @@ describe("api client", () => {
       })
     );
   });
+
+  it("submits clarification answers", async () => {
+    const fetchImpl = vi.fn(async () => {
+      return jsonResponse({ job_id: "job-2", clarification: { id: "clarification-1", answer: "todo" } });
+    });
+    const client = createApiClient({ baseUrl: "http://home.test", fetchImpl });
+
+    await client.answerClarification("clarification-1", "todo");
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://home.test/api/clarifications/clarification-1/answer",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ answer: "todo" })
+      })
+    );
+  });
 });

@@ -48,4 +48,4 @@ Do not put secrets, tokens, or private credentials in note bodies, tags, or fron
 - Duplicate content was avoided.
 - No more than five notes were created with `notes_create` from the command.
 - The notes tile was refreshed or marked stale.
-- A generated page summarizes what was saved.
+- `job_set_summary` summarizes what was saved. Do not call `pages_publish` for note-only commands.

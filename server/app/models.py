@@ -89,6 +89,21 @@ class Job(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class Clarification(Base):
+    __tablename__ = "clarifications"
+
+    id: Mapped[str] = mapped_column(uuid_type(), primary_key=True, default=new_id)
+    job_id: Mapped[str] = mapped_column(uuid_type(), index=True)
+    question: Mapped[str] = mapped_column(Text)
+    choices: Mapped[list[str]] = mapped_column(JSON, default=list)
+    draft: Mapped[dict] = mapped_column(JSON, default=dict)
+    answer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String, default="pending")
+    follow_up_job_id: Mapped[str | None] = mapped_column(uuid_type(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    answered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class AgentProfile(Base):
     __tablename__ = "agent_profiles"
 

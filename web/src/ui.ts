@@ -123,7 +123,8 @@ export function statusEmoji(status: string): string {
     done: "✅",
     failed: "❌",
     cancelled: "🛑",
-    needs_approval: "🛡️"
+    needs_approval: "🛡️",
+    needs_clarification: "?"
   }[status] || "•";
 }
 

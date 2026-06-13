@@ -42,6 +42,7 @@ describe("ui helpers", () => {
     expect(statusEmoji("failed")).toBe("❌");
     expect(statusEmoji("cancelled")).toBe("🛑");
     expect(statusEmoji("needs_approval")).toBe("🛡️");
+    expect(statusEmoji("needs_clarification")).toBe("?");
     expect(statusEmoji("mystery")).toBe("•");
   });
 

@@ -47,7 +47,7 @@ except Exception:  # pragma: no cover
 
 
 DEFAULT_DATABASE_URL = "sqlite:///./hermes-home.db"
-JSON_COLUMNS = {"front", "back", "scope", "tags", "embedding", "payload", "result", "provenance"}
+JSON_COLUMNS = {"front", "back", "scope", "tags", "embedding", "payload", "result", "provenance", "choices", "draft"}
 _ENGINE: Engine | None = None
 _ENGINE_URL: str | None = None
 
@@ -159,6 +159,20 @@ SQLITE_SCHEMA = [
       profile_id TEXT,
       started_at TEXT,
       finished_at TEXT
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS clarifications (
+      id TEXT PRIMARY KEY,
+      job_id TEXT NOT NULL,
+      question TEXT NOT NULL,
+      choices TEXT NOT NULL DEFAULT '[]',
+      draft TEXT NOT NULL DEFAULT '{}',
+      answer TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      follow_up_job_id TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      answered_at TEXT
     )
     """,
     """
@@ -687,6 +701,8 @@ def ensure_sqlite_schema(connection: Any) -> None:
     ensure_sqlite_column(connection, "jobs", "emoji", "TEXT")
     ensure_sqlite_column(connection, "jobs", "summary", "TEXT")
     ensure_sqlite_column(connection, "jobs", "profile_id", "TEXT")
+    ensure_sqlite_column(connection, "clarifications", "follow_up_job_id", "TEXT")
+    ensure_sqlite_column(connection, "clarifications", "answered_at", "TEXT")
     ensure_sqlite_column(connection, "action_runs", "source_job_id", "TEXT")
     ensure_sqlite_column(connection, "action_runs", "source_page_id", "TEXT")
     ensure_sqlite_column(connection, "codex_runs", "effort", "TEXT NOT NULL DEFAULT 'xhigh'")
@@ -1168,6 +1184,46 @@ async def pages_publish(title: str, html: str, provenance: dict[str, Any] | None
     return {"page": row}
 
 
+async def clarifications_request(
+    question: str,
+    choices: list[str] | None = None,
+    draft: dict[str, Any] | None = None,
+    source_job_id: str | None = None,
+) -> dict[str, Any]:
+    job_id = source_job_id or current_job_id()
+    if not job_id:
+        raise VikunjaMCPError("clarifications_request requires source_job_id or HERMES_HOME_JOB_ID")
+    clean_question = " ".join(question.strip().split())
+    if not clean_question:
+        raise VikunjaMCPError("clarification question must not be blank")
+    clean_choices: list[str] = []
+    for choice in choices or []:
+        value = " ".join(str(choice).strip().split())
+        if value and value not in clean_choices:
+            clean_choices.append(value[:120])
+    row = one_required(
+        f"""
+        INSERT INTO clarifications (
+          id, job_id, question, choices, draft, status, created_at
+        )
+        VALUES (
+          :id, :job_id, :question, {json_expr('choices_json')}, {json_expr('draft_json')}, 'pending', CURRENT_TIMESTAMP
+        )
+        RETURNING *
+        """,
+        {
+            "id": new_id(),
+            "job_id": job_id,
+            "question": clean_question,
+            "choices_json": dumps_json(clean_choices),
+            "draft_json": dumps_json(draft or {}),
+        },
+    )
+    execute("UPDATE jobs SET status = 'needs_clarification' WHERE id = :job_id", {"job_id": job_id})
+    await log_job_event(f"clarifications_request asked: {clean_question}", "tool", job_id)
+    return {"clarification": row, "needs_clarification": True}
+
+
 async def approvals_request(action: str, scope: dict[str, Any]) -> dict[str, Any]:
     job_id = current_job_id()
     row = one_required(
@@ -1221,7 +1277,15 @@ async def job_set_summary(emoji: str, summary: str, job_id: str | None = None) -
         raise VikunjaMCPError("emoji must be a single short emoji")
     clean_summary = " ".join(summary.strip().split())[:140]
     execute(
-        "UPDATE jobs SET emoji = :emoji, summary = :summary WHERE id = :job_id",
+        """
+        UPDATE jobs
+        SET
+          emoji = :emoji,
+          summary = :summary,
+          status = CASE WHEN status IN ('queued', 'running') THEN 'done' ELSE status END,
+          finished_at = CASE WHEN status IN ('queued', 'running') THEN CURRENT_TIMESTAMP ELSE finished_at END
+        WHERE id = :job_id
+        """,
         {"emoji": clean_emoji, "summary": clean_summary, "job_id": target_job_id},
     )
     await safe_log(f"job_set_summary updated {target_job_id}")
@@ -1278,6 +1342,7 @@ TOOLS = [
     calendar_update_event,
     tiles_update,
     pages_publish,
+    clarifications_request,
     job_set_summary,
     approvals_request,
     log_job_event,

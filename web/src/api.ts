@@ -98,7 +98,7 @@ export type NotesResponse = {
 export type Job = {
   id: string;
   command: string;
-  status: "queued" | "running" | "done" | "failed" | "needs_approval" | "cancelled";
+  status: "queued" | "running" | "done" | "failed" | "needs_approval" | "needs_clarification" | "cancelled";
   page_id: string | null;
   error: string | null;
   stdout_tail: string | null;
@@ -115,6 +115,19 @@ export type Job = {
   };
   started_at: string | null;
   finished_at: string | null;
+};
+
+export type Clarification = {
+  id: string;
+  job_id: string;
+  question: string;
+  choices: string[];
+  draft: Record<string, unknown>;
+  answer: string | null;
+  status: "pending" | "answered" | string;
+  follow_up_job_id: string | null;
+  created_at: string | null;
+  answered_at: string | null;
 };
 
 export type Profile = {
@@ -409,13 +422,14 @@ export function createApiClient(options: ClientOptions = {}) {
     getJobs: (limit?: number, profileId?: string) => request<{ jobs: Job[] }>(`/api/jobs${queryString({ limit, profile_id: profileId })}`),
     getJob: (jobId: string) => request<{ job: Job }>(`/api/jobs/${jobId}`),
     getJobTimeline: (jobId: string) =>
-      request<{ job: Job; events: JobEvent[]; page: Page | null; approvals: Approval[] }>(`/api/jobs/${jobId}/timeline`),
+      request<{ job: Job; events: JobEvent[]; page: Page | null; approvals: Approval[]; clarifications: Clarification[] }>(`/api/jobs/${jobId}/timeline`),
     getJobDiagnostics: (jobId: string) =>
       request<{
         job: Job;
         events: JobEvent[];
         page: Omit<Page, "html"> & { html_bytes: number } | null;
         approvals: Approval[];
+        clarifications: Clarification[];
         environment: Record<string, unknown>;
       }>(`/api/jobs/${jobId}/diagnostics`),
     getJobEvents: (jobId: string) => request<string>(`/api/jobs/${jobId}/events`, { headers: { accept: "text/event-stream" } }),
@@ -423,6 +437,11 @@ export function createApiClient(options: ClientOptions = {}) {
       streamEvents(apiUrl(`/api/jobs/${jobId}/stream`), fetchImpl, onEvent, signal, includeBearerToken, credentials),
     cancelJob: (jobId: string) => request<{ ok: boolean; job_id: string; status: Job["status"] }>(`/api/jobs/${jobId}/cancel`, { method: "POST" }),
     retryJob: (jobId: string) => request<{ job_id: string }>(`/api/jobs/${jobId}/retry`, { method: "POST" }),
+    answerClarification: (clarificationId: string, answer: string) =>
+      request<{ job_id: string; clarification: Clarification; job: Job | null }>(`/api/clarifications/${clarificationId}/answer`, {
+        method: "POST",
+        body: JSON.stringify({ answer })
+      }),
     getPage: (pageId: string) => request<{ page: Page }>(`/api/pages/${pageId}`),
     getPages: () => request<{ pages: Page[] }>("/api/pages"),
     pinPage: (pageId: string) => request<{ page: Page }>(`/api/pages/${pageId}/pin`, { method: "POST" }),
