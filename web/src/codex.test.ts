@@ -48,7 +48,7 @@ describe("renderCodexSurface", () => {
     const root = renderCodexSurface(state, [codexRun()], { submit, openRun });
 
     expect(root.querySelector(".eyebrow")?.textContent).toBe("codex");
-    expect(root.querySelector("h1")?.textContent).toBe("codex");
+    // h1 is rendered by the shell, not the surface itself
     expect(root.textContent).toContain("previous prompts");
     expect(root.textContent).toContain("previous prompt");
     expect(root.textContent).toContain("high · done");

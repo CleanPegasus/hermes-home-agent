@@ -11,7 +11,7 @@ export function renderCalendarSurface(
 ): HTMLElement {
   const root = document.createElement("section");
   root.className = "list-screen detail-screen";
-  root.innerHTML = '<p class="eyebrow">approval gated</p><h1>calendar</h1>';
+  root.innerHTML = '<p class="eyebrow">approval gated</p>';
   const facts = factsList([
     ["adapter", data.adapter],
     ["writes", data.write_policy],
@@ -25,7 +25,7 @@ export function renderCalendarSurface(
 export function renderChannelsSurface(data: { configured: boolean; connectors: ConnectorStatus[]; messages: ChannelMessage[] }, actions: SyncActions = {}): HTMLElement {
   const root = document.createElement("section");
   root.className = "list-screen detail-screen";
-  root.innerHTML = '<p class="eyebrow">inbound</p><h1>channels</h1>';
+  root.innerHTML = '<p class="eyebrow">inbound</p>';
   const connector = data.connectors[0] || nullConnector("channels");
   root.append(
     actionBar(actions),
@@ -45,7 +45,7 @@ export function renderSpendSurface(
 ): HTMLElement {
   const root = document.createElement("section");
   root.className = "list-screen detail-screen";
-  root.innerHTML = '<p class="eyebrow">ledger</p><h1>spend</h1>';
+  root.innerHTML = '<p class="eyebrow">ledger</p>';
   root.append(
     actionBar(actions),
     factsList([
@@ -68,7 +68,7 @@ export function renderVitalsSurface(
 ): HTMLElement {
   const root = document.createElement("section");
   root.className = "list-screen detail-screen";
-  root.innerHTML = '<p class="eyebrow">system</p><h1>vitals</h1>';
+  root.innerHTML = '<p class="eyebrow">system</p>';
   const sessionFacts = Object.entries(data.session).map(([key, value]) => [key, String(value)] as [string, string]);
   const countFacts = Object.entries(data.counts).map(([key, value]) => [key, typeof value === "object" ? JSON.stringify(value) : String(value)] as [string, string]);
   root.append(factsList([...sessionFacts, ...countFacts]), renderAuditFilters(auditFilters, onAuditFilter), renderActionRuns(actionRuns, openActionRun));

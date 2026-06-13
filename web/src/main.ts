@@ -23,10 +23,11 @@ import { renderProfileEditor, renderProfileFocus, renderProfilesPage } from "./p
 import { renderActionRunDetail, renderCalendarSurface, renderChannelsSurface, renderDiagnosticsBundle, renderSpendSurface, renderVitalsSurface } from "./surfaces";
 import { renderTileGrid } from "./tiles";
 import { renderTodos } from "./todos";
-import { addFact } from "./ui";
+import { addFact, toast } from "./ui";
 
 let api: ApiClient = createApiClient();
 let sessionState: SessionInfo | null = null;
+let navDepth = 0;
 const COMMAND_SUGGESTIONS = ["add buy oat milk to my todos", "summarize today", "file a note"];
 const PROFILE_STORAGE_KEY = "HERMES_PROFILE_ID";
 const app = document.querySelector<HTMLDivElement>("#app");
@@ -45,6 +46,7 @@ function visit(path: string): void {
   const current = `${window.location.pathname}${window.location.search}`;
   if (current !== path) {
     history.pushState({}, "", path);
+    navDepth += 1;
   }
   void renderRoute(path);
 }
@@ -52,8 +54,11 @@ function visit(path: string): void {
 async function renderRoute(path = `${window.location.pathname}${window.location.search}`): Promise<void> {
   const url = new URL(path, window.location.origin);
   const parts = url.pathname.split("/").filter(Boolean).map((part) => decodeURIComponent(part));
+  let loadingTimer: number | undefined;
   if (parts[0] !== "settings") {
-    renderLoading(parts[0] || "start");
+    loadingTimer = window.setTimeout(() => {
+      renderLoading(parts[0] || "start");
+    }, 200);
   }
   try {
     if (parts.length === 0) {
@@ -131,10 +136,13 @@ async function renderRoute(path = `${window.location.pathname}${window.location.
       return;
     }
     renderRouteError(error instanceof Error ? error.message : "couldn't load this screen.");
+  } finally {
+    window.clearTimeout(loadingTimer);
   }
 }
 
-function shell(title: string, body: HTMLElement): HTMLElement {
+function shell(title: string, body: HTMLElement, opts?: { commandBar?: boolean }): HTMLElement {
+  const showCommandBar = opts?.commandBar !== false;
   const root = document.createElement("main");
   root.className = "shell";
   const top = document.createElement("div");
@@ -142,12 +150,17 @@ function shell(title: string, body: HTMLElement): HTMLElement {
   const agentLabel = sessionState
     ? `hermes-01-${sessionState.agent.state}${sessionState.agent.configured ? "" : "-fallback"}`
     : "hermes-01-setup";
-  top.innerHTML = `<h1>${title}</h1><span class="agent-state">${agentLabel}</span>`;
+  const h1 = document.createElement("h1");
+  h1.textContent = title;
+  const agentSpan = document.createElement("span");
+  agentSpan.className = "agent-state";
+  agentSpan.textContent = agentLabel;
+  top.append(h1, agentSpan);
   const nav = document.createElement("nav");
   nav.className = "nav-bar";
   nav.innerHTML = '<button type="button" data-nav="back" aria-label="back">‹</button><button type="button" data-nav="home" aria-label="start">⊞</button><button type="button" data-nav="settings" aria-label="settings">⚙</button>';
   nav.querySelector('[data-nav="back"]')?.addEventListener("click", () => {
-    if (history.length > 1) {
+    if (navDepth > 0) {
       history.back();
     } else {
       visit("/");
@@ -155,22 +168,52 @@ function shell(title: string, body: HTMLElement): HTMLElement {
   });
   nav.querySelector('[data-nav="home"]')?.addEventListener("click", () => visit("/"));
   nav.querySelector('[data-nav="settings"]')?.addEventListener("click", () => visit("/settings"));
-  root.append(top, body, nav);
+  if (showCommandBar) {
+    const globalBar = document.createElement("form");
+    globalBar.className = "command-bar global-command-bar";
+    globalBar.innerHTML = '<input class="command-input" name="command" autocomplete="off" placeholder="tell hermes what to do..." /><button type="submit" aria-label="send">›</button>';
+    globalBar.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const input = globalBar.querySelector<HTMLInputElement>(".command-input");
+      const button = globalBar.querySelector<HTMLButtonElement>('button[type="submit"]');
+      const text = input?.value.trim() || "";
+      if (!text) {
+        return;
+      }
+      globalBar.classList.add("is-submitting");
+      input?.setAttribute("disabled", "true");
+      button?.setAttribute("disabled", "true");
+      try {
+        await runCommand(text, localStorage.getItem(PROFILE_STORAGE_KEY) || null);
+      } finally {
+        globalBar.classList.remove("is-submitting");
+        input?.removeAttribute("disabled");
+        button?.removeAttribute("disabled");
+      }
+    });
+    root.append(top, body, globalBar, nav);
+  } else {
+    root.append(top, body, nav);
+  }
   return root;
 }
 
-async function showStart(): Promise<void> {
-  sessionState = await api.getSession();
-  const { tiles } = await api.getTiles();
-  const profileState = await api.getProfiles();
+async function showStart(prefillCommand?: string): Promise<void> {
+  history.replaceState({}, "", "/");
+  const [session, { tiles }, profileState, activity, pinned] = await Promise.all([
+    api.getSession(),
+    api.getTiles(),
+    api.getProfiles(),
+    renderRecentActivity(),
+    renderPinnedPages()
+  ]);
+  sessionState = session;
   const selectedProfileId = selectedProfile(profileState.profiles, profileState.default_id);
   const body = document.createElement("section");
   body.className = "start-screen";
   body.append(renderTileGrid(tiles, (key) => visit(`/tile/${encodeURIComponent(key)}`)));
-
-  const activity = await renderRecentActivity();
+  body.append(renderProfilePicker(profileState.profiles, selectedProfileId));
   body.append(activity);
-  const pinned = await renderPinnedPages();
   body.append(pinned);
 
   const chips = document.createElement("div");
@@ -205,8 +248,6 @@ async function showStart(): Promise<void> {
     button?.setAttribute("disabled", "true");
     try {
       await runCommand(text, selectedProfile(profileState.profiles, profileState.default_id));
-    } catch (error) {
-      renderCommandError(String(error instanceof Error ? error.message : error));
     } finally {
       form.classList.remove("is-submitting");
       input?.removeAttribute("disabled");
@@ -214,17 +255,26 @@ async function showStart(): Promise<void> {
     }
   });
 
-  body.append(renderProfilePicker(profileState.profiles, selectedProfileId), chips, form);
-  setScreen(shell("start", body));
+  body.append(chips, form);
+  setScreen(shell("start", body, { commandBar: false }));
+
+  if (prefillCommand) {
+    const input = body.querySelector<HTMLInputElement>(".command-input");
+    if (input) {
+      input.value = prefillCommand;
+      input.focus();
+      input.setSelectionRange(prefillCommand.length, prefillCommand.length);
+    }
+  }
 }
 
 async function openTile(key: string): Promise<void> {
   if (key === "todos") {
     const todoState = await api.getTodos();
     setScreen(shell("todos", renderTodos(todoState.todos, {
-      complete: (todoId) => void runTodoAction("todos.complete", todoId),
-      reopen: (todoId) => void runTodoAction("todos.reopen", todoId),
-      drop: (todoId) => void runTodoAction("todos.drop", todoId)
+      complete: (todoId) => runTodoAction("todos.complete", todoId),
+      reopen: (todoId) => runTodoAction("todos.reopen", todoId),
+      drop: (todoId) => runTodoAction("todos.drop", todoId)
     }, {
       configured: todoState.configured,
       warning: todoState.warning,
@@ -292,7 +342,8 @@ async function renderCapabilityStatus(key: string): Promise<HTMLElement> {
   const capabilities = await api.getCapabilities();
   const root = document.createElement("section");
   root.className = "list-screen detail-screen";
-  root.innerHTML = `<p class="eyebrow">capability</p><h1>${key}</h1>`;
+  root.innerHTML = '<p class="eyebrow">capability</p><h1></h1>';
+  root.querySelector("h1")!.textContent = key;
   const facts = document.createElement("dl");
   facts.className = "fact-list";
   const status = capabilityStatus(key, capabilities.features);
@@ -305,16 +356,64 @@ async function renderCapabilityStatus(key: string): Promise<HTMLElement> {
 
 async function runCommand(text: string, profileId?: string | null): Promise<void> {
   const working = renderWorkingScreen(text);
-  setScreen(shell("working", working));
+  setScreen(shell("working", working, { commandBar: false }));
   const status = working.querySelector<HTMLElement>(".working-status");
-  const { job_id } = await api.sendCommand(text, profileId);
-  const job = await waitForJob(api, job_id, (steps) => updateStepLog(working, steps), {
-    onStatus: (message) => {
-      if (status) {
-        status.textContent = message;
+  const bgButton = working.querySelector<HTMLButtonElement>('[data-action="background"]');
+  const cancelButton = working.querySelector<HTMLButtonElement>('[data-action="cancel"]');
+
+  let job_id: string;
+  try {
+    ({ job_id } = await api.sendCommand(text, profileId));
+  } catch (error) {
+    toast(error instanceof Error ? error.message : "couldn't send command", "error");
+    await showStart(text);
+    return;
+  }
+
+  const aborter = new AbortController();
+
+  if (bgButton) {
+    bgButton.removeAttribute("disabled");
+    bgButton.addEventListener("click", () => {
+      aborter.abort();
+      toast("still running - check jobs for the result");
+      visit("/");
+    });
+  }
+  if (cancelButton) {
+    cancelButton.removeAttribute("disabled");
+    cancelButton.addEventListener("click", async () => {
+      aborter.abort();
+      try {
+        await api.cancelJob(job_id);
+      } catch (error) {
+        toast(error instanceof Error ? error.message : "couldn't cancel job", "error");
       }
+      visit(`/job/${encodeURIComponent(job_id)}`);
+    });
+  }
+
+  let job;
+  try {
+    job = await waitForJob(api, job_id, (steps) => updateStepLog(working, steps), {
+      signal: aborter.signal,
+      onStatus: (message) => {
+        if (status) {
+          status.textContent = message;
+        }
+      }
+    });
+  } catch (error) {
+    if (aborter.signal.aborted) {
+      return;
     }
-  });
+    throw error;
+  }
+
+  if (aborter.signal.aborted) {
+    return;
+  }
+
   if (job.status === "done" && job.page_id) {
     visit(`/page/${encodeURIComponent(job.page_id)}`);
     return;
@@ -325,16 +424,19 @@ async function runCommand(text: string, profileId?: string | null): Promise<void
   }
   const error = document.createElement("section");
   error.className = "list-screen";
-  error.innerHTML = `<p class="eyebrow">jobs</p><h1>didn't finish</h1><p class="empty"></p>`;
+  error.innerHTML = `<p class="eyebrow">jobs</p><h1>didn't finish</h1><p class="empty"></p><div class="page-actions"></div>`;
   error.querySelector(".empty")!.textContent = job.error || "the steps it took are in jobs";
-  setScreen(shell("failed", error));
-}
-
-function renderCommandError(message: string): void {
-  const error = document.createElement("section");
-  error.className = "list-screen";
-  error.innerHTML = `<p class="eyebrow">chat</p><h1>couldn't send</h1><p class="empty"></p>`;
-  error.querySelector(".empty")!.textContent = message;
+  const openJobBtn = document.createElement("button");
+  openJobBtn.type = "button";
+  openJobBtn.className = "page-action secondary";
+  openJobBtn.textContent = "open job";
+  openJobBtn.addEventListener("click", () => visit(`/job/${encodeURIComponent(job.id)}`));
+  const editCommandBtn = document.createElement("button");
+  editCommandBtn.type = "button";
+  editCommandBtn.className = "page-action secondary";
+  editCommandBtn.textContent = "edit command";
+  editCommandBtn.addEventListener("click", () => void showStart(text));
+  error.querySelector(".page-actions")!.append(openJobBtn, editCommandBtn);
   setScreen(shell("failed", error));
 }
 
@@ -393,18 +495,32 @@ async function showNoteDetail(noteId: string): Promise<void> {
 }
 
 async function saveNote(noteId: string, changes: { title: string; body_md: string; category: string; tags: string[] }): Promise<void> {
-  await api.updateNote(noteId, changes);
-  await showNoteDetail(noteId);
+  try {
+    await api.updateNote(noteId, changes);
+    toast("note saved");
+    await showNoteDetail(noteId);
+  } catch (error) {
+    toast(error instanceof Error ? error.message : "couldn't save note", "error");
+  }
 }
 
 async function archiveNote(noteId: string): Promise<void> {
-  await api.archiveNote(noteId);
-  visit("/tile/notes");
+  try {
+    await api.archiveNote(noteId);
+    toast("note archived");
+    visit("/tile/notes");
+  } catch (error) {
+    toast(error instanceof Error ? error.message : "couldn't archive note", "error");
+  }
 }
 
 async function mergeNote(noteId: string, targetNoteId: string): Promise<void> {
-  const { note } = await api.mergeNote(noteId, targetNoteId);
-  visit(`/note/${encodeURIComponent(note.id)}`);
+  try {
+    const { note } = await api.mergeNote(noteId, targetNoteId);
+    visit(`/note/${encodeURIComponent(note.id)}`);
+  } catch (error) {
+    toast(error instanceof Error ? error.message : "couldn't merge note", "error");
+  }
 }
 
 async function showJobDetail(jobId: string): Promise<void> {
@@ -496,8 +612,18 @@ async function showProfileEditor(profileId: string | null): Promise<void> {
 }
 
 function renderProfilePicker(profiles: Profile[], selectedId: string | null): HTMLElement {
+  const wrapper = document.createElement("div");
+  wrapper.className = "profile-picker-wrapper";
+
   const root = document.createElement("div");
   root.className = "profile-strip";
+
+  const nameLabel = document.createElement("span");
+  nameLabel.className = "profile-selected-name";
+  nameLabel.style.cssText = "font-size:12px;color:rgba(255,255,255,0.65);margin-top:4px;display:block;";
+  const initialProfile = profiles.find((p) => p.id === selectedId) || profiles[0];
+  nameLabel.textContent = initialProfile?.name ?? "";
+
   for (const profile of profiles) {
     const button = document.createElement("button");
     button.type = "button";
@@ -506,16 +632,22 @@ function renderProfilePicker(profiles: Profile[], selectedId: string | null): HT
     button.style.setProperty("--profile-color", profile.color);
     button.textContent = profile.emoji;
     button.title = profile.name;
-    button.classList.toggle("active", profile.id === selectedId);
+    const isActive = profile.id === selectedId;
+    button.classList.toggle("active", isActive);
+    button.setAttribute("aria-pressed", String(isActive));
     button.addEventListener("click", () => {
       localStorage.setItem(PROFILE_STORAGE_KEY, profile.id);
-      for (const item of root.querySelectorAll(".profile-pick")) {
-        item.classList.toggle("active", item === button);
+      for (const item of root.querySelectorAll<HTMLButtonElement>(".profile-pick")) {
+        const active = item === button;
+        item.classList.toggle("active", active);
+        item.setAttribute("aria-pressed", String(active));
       }
+      nameLabel.textContent = profile.name;
     });
     root.append(button);
   }
-  return root;
+  wrapper.append(root, nameLabel);
+  return wrapper;
 }
 
 function selectedProfile(profiles: Profile[], defaultId: string | null): string | null {
@@ -527,8 +659,12 @@ function selectedProfile(profiles: Profile[], defaultId: string | null): string 
 }
 
 async function submitCodexPrompt(prompt: string, effort: CodexEffort, confirmDangerousMode: boolean): Promise<void> {
-  const { codex_run } = await api.createCodexRun(prompt, effort, confirmDangerousMode);
-  visit(`/codex/${encodeURIComponent(codex_run.id)}`);
+  try {
+    const { codex_run } = await api.createCodexRun(prompt, effort, confirmDangerousMode);
+    visit(`/codex/${encodeURIComponent(codex_run.id)}`);
+  } catch (error) {
+    toast(error instanceof Error ? error.message : "couldn't submit codex run", "error");
+  }
 }
 
 async function showCodexRun(runId: string): Promise<void> {
@@ -547,8 +683,12 @@ async function showCodexRun(runId: string): Promise<void> {
 }
 
 async function cancelCodexRun(runId: string): Promise<void> {
-  await api.cancelCodexRun(runId);
-  await showCodexRun(runId);
+  try {
+    await api.cancelCodexRun(runId);
+    await showCodexRun(runId);
+  } catch (error) {
+    toast(error instanceof Error ? error.message : "couldn't cancel run", "error");
+  }
 }
 
 async function showVitals(filters: ActionRunFilters = {}): Promise<void> {
@@ -563,32 +703,54 @@ async function showVitals(filters: ActionRunFilters = {}): Promise<void> {
 }
 
 async function syncConnectorsAndReload(tile: "calendar" | "channels" | "spend"): Promise<void> {
-  await api.syncConnectors();
-  await openTile(tile);
+  try {
+    await api.syncConnectors();
+    await openTile(tile);
+  } catch (error) {
+    toast(error instanceof Error ? error.message : "sync failed", "error");
+  }
 }
 
 async function retryJob(jobId: string): Promise<void> {
-  const { job_id } = await api.retryJob(jobId);
-  visit(`/job/${encodeURIComponent(job_id)}`);
+  try {
+    const { job_id } = await api.retryJob(jobId);
+    visit(`/job/${encodeURIComponent(job_id)}`);
+  } catch (error) {
+    toast(error instanceof Error ? error.message : "couldn't retry job", "error");
+  }
 }
 
 async function cancelJob(jobId: string): Promise<void> {
-  await api.cancelJob(jobId);
-  await showJobDetail(jobId);
+  try {
+    await api.cancelJob(jobId);
+    await showJobDetail(jobId);
+  } catch (error) {
+    toast(error instanceof Error ? error.message : "couldn't cancel job", "error");
+  }
 }
 
 async function runTodoAction(action: string, todoId: string): Promise<void> {
-  await api.runAction(action, { todo_id: todoId });
-  await openTile("todos");
+  try {
+    await api.runAction(action, { todo_id: todoId });
+  } catch (error) {
+    toast(error instanceof Error ? error.message : "action failed", "error");
+    throw error;
+  }
 }
 
 async function decideApproval(approvalId: string, decision: "approve" | "reject"): Promise<void> {
-  if (decision === "approve") {
-    await api.approveApproval(approvalId);
-  } else {
-    await api.rejectApproval(approvalId);
+  try {
+    if (decision === "approve") {
+      await api.approveApproval(approvalId);
+      toast("approved");
+    } else {
+      await api.rejectApproval(approvalId);
+      toast("rejected");
+    }
+    await renderRoute();
+  } catch (error) {
+    toast(error instanceof Error ? error.message : "couldn't decide approval", "error");
   }
-  visit("/tile/approvals");
 }
 
 async function renderRecentActivity(): Promise<HTMLElement> {
@@ -729,6 +891,7 @@ if ("serviceWorker" in navigator) {
 }
 
 window.addEventListener("popstate", () => {
+  navDepth = Math.max(0, navDepth - 1);
   void renderRoute();
 });
 

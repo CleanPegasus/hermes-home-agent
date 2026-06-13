@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { chip, emptyState, factsList, relativeDate, shortDate, statusEmoji } from "./ui";
+import { chip, emptyState, factsList, relativeDate, shortDate, statusEmoji, stripMarkdown } from "./ui";
 
 describe("ui helpers", () => {
   afterEach(() => {
@@ -43,5 +43,15 @@ describe("ui helpers", () => {
     expect(statusEmoji("cancelled")).toBe("🛑");
     expect(statusEmoji("needs_approval")).toBe("🛡️");
     expect(statusEmoji("mystery")).toBe("•");
+  });
+
+  it("stripMarkdown removes headings, bold, italic, code, links, and blockquotes", () => {
+    expect(stripMarkdown("## Shopping List")).toBe("Shopping List");
+    expect(stripMarkdown("**bold** and *italic* text")).toBe("bold and italic text");
+    expect(stripMarkdown("`inline code` here")).toBe("inline code here");
+    expect(stripMarkdown("[link text](https://example.com) end")).toBe("link text end");
+    expect(stripMarkdown("> quoted line")).toBe("quoted line");
+    expect(stripMarkdown("**bold** before *italic* and `code`")).toBe("bold before italic and code");
+    expect(stripMarkdown("# Title\n**bold** [link](url)\n> quote")).toBe("Title\nbold link\nquote");
   });
 });

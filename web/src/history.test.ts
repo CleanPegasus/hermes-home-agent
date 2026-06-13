@@ -24,7 +24,7 @@ function job(id: string, command: string, extra: Partial<Job> = {}): Job {
 }
 
 describe("renderHistory", () => {
-  it("renders one tile per job with emoji summary status and day groups", () => {
+  it("renders one tile per job with svg status icon, summary, status label, and day groups", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-06-12T12:00:00Z"));
     const open = vi.fn();
@@ -44,9 +44,20 @@ describe("renderHistory", () => {
     expect(root.querySelectorAll(".history-tile")).toHaveLength(2);
     expect(root.textContent).toContain("today");
     expect(root.textContent).toContain("yesterday");
-    expect(root.textContent).toContain("✅");
+    // Status labels present
+    expect(root.textContent).toContain("done");
+    expect(root.textContent).toContain("failed");
+    // Summary/command text present
     expect(root.textContent).toContain("added oat milk");
+    // No emoji rendered on tile faces
+    expect(root.textContent).not.toContain("✅");
+    expect(root.textContent).not.toContain("⚠️");
+    // SVG icons rendered (status icons)
+    expect(root.querySelectorAll("svg").length).toBeGreaterThan(0);
+    // Failed tile has correct class
     expect(root.querySelector(".history-tile.failed")).not.toBeNull();
+    // Watermarks present
+    expect(root.querySelectorAll(".tile-watermark").length).toBeGreaterThan(0);
 
     root.querySelector<HTMLButtonElement>(".history-tile")!.click();
     expect(open).toHaveBeenCalledWith(jobs[0]);

@@ -2,9 +2,9 @@ import type { Todo, TodoLabel, TodoProject } from "./api";
 import { chip, emptyState } from "./ui";
 
 type TodoActions = {
-  complete: (todoId: string) => void;
-  reopen: (todoId: string) => void;
-  drop: (todoId: string) => void;
+  complete: (todoId: string) => Promise<void>;
+  reopen: (todoId: string) => Promise<void>;
+  drop: (todoId: string) => Promise<void>;
 };
 
 type TodoSurfaceState = {
@@ -20,7 +20,7 @@ const FILTERS: TodoFilter[] = ["open", "done", "dropped"];
 export function renderTodos(todos: Todo[], actions?: TodoActions, state: TodoSurfaceState = {}): HTMLElement {
   const root = document.createElement("section");
   root.className = "list-screen";
-  root.innerHTML = '<p class="eyebrow">agent canonical</p><h1>todos</h1>';
+  root.innerHTML = '<p class="eyebrow">agent canonical</p>';
   const tabs = document.createElement("div");
   tabs.className = "pivot-tabs";
   tabs.setAttribute("role", "tablist");
@@ -62,6 +62,13 @@ export function renderTodos(todos: Todo[], actions?: TodoActions, state: TodoSur
     renderFilteredTodos();
   });
 
+  function updateCounts(): void {
+    for (const button of tabs.querySelectorAll<HTMLButtonElement>(".pivot-button[data-filter]")) {
+      const filter = button.dataset.filter as TodoFilter;
+      button.textContent = `${filter} ${todos.filter((todo) => todo.status === filter).length}`;
+    }
+  }
+
   function renderFilteredTodos(): void {
     list.replaceChildren();
     for (const button of tabs.querySelectorAll<HTMLButtonElement>(".pivot-button")) {
@@ -80,8 +87,37 @@ export function renderTodos(todos: Todo[], actions?: TodoActions, state: TodoSur
       return;
     }
     for (const todo of filtered) {
-      list.append(renderTodoRow(todo, actions));
+      list.append(renderTodoRow(todo, actions ? makeActionHandler(todo) : undefined));
     }
+  }
+
+  function makeActionHandler(todo: Todo) {
+    return async (kind: "complete" | "reopen" | "drop", _todo: Todo, controls: HTMLElement): Promise<void> => {
+      const scope = controls.parentElement ?? controls;
+      const buttons = scope.querySelectorAll<HTMLButtonElement>("button");
+      for (const btn of buttons) {
+        btn.disabled = true;
+      }
+      try {
+        if (kind === "complete") {
+          await actions!.complete(todo.id);
+          todo.status = "done";
+        } else if (kind === "reopen") {
+          await actions!.reopen(todo.id);
+          todo.status = "open";
+        } else {
+          await actions!.drop(todo.id);
+          todo.status = "dropped";
+        }
+        updateCounts();
+        renderFilteredTodos();
+      } catch {
+        // main.ts already toasted the error — just re-enable the buttons
+        for (const btn of buttons) {
+          btn.disabled = false;
+        }
+      }
+    };
   }
 
   renderFilteredTodos();
@@ -98,10 +134,11 @@ export function filterTodos(todos: Todo[], status: TodoFilter, projectId = "all"
   });
 }
 
-function renderTodoRow(todo: Todo, actions?: TodoActions): HTMLElement {
+function renderTodoRow(todo: Todo, onAction?: (kind: "complete" | "reopen" | "drop", todo: Todo, controls: HTMLElement) => Promise<void>): HTMLElement {
   const row = document.createElement("div");
   row.className = `list-row todo-row ${todo.status}`;
-  const box = document.createElement("span");
+  const box = document.createElement("button");
+  box.type = "button";
   box.className = "wp-checkbox";
   box.textContent = todo.status === "done" ? "x" : "";
   const text = document.createElement("span");
@@ -112,15 +149,25 @@ function renderTodoRow(todo: Todo, actions?: TodoActions): HTMLElement {
   metaLine.textContent = todoMeta(todo);
   meta.append(metaLine, renderTodoChips(todo), renderPriority(todo), renderDue(todo));
   row.append(box, text, meta);
-  if (actions) {
+  if (onAction) {
     const controls = document.createElement("div");
     controls.className = "row-actions";
     if (todo.status === "open") {
-      controls.append(actionButton("done", () => actions.complete(todo.id)), actionButton("drop", () => actions.drop(todo.id), "danger"));
+      box.setAttribute("aria-label", "mark done");
+      box.addEventListener("click", () => void onAction("complete", todo, controls));
+      controls.append(
+        actionButton("done", () => void onAction("complete", todo, controls)),
+        actionButton("drop", () => void onAction("drop", todo, controls), "danger")
+      );
     } else {
-      controls.append(actionButton("reopen", () => actions.reopen(todo.id)));
+      box.setAttribute("aria-label", "reopen");
+      box.addEventListener("click", () => void onAction("reopen", todo, controls));
+      controls.append(actionButton("reopen", () => void onAction("reopen", todo, controls)));
     }
     row.append(controls);
+  } else {
+    box.setAttribute("aria-label", todo.status === "done" ? "done" : "open");
+    box.disabled = true;
   }
   return row;
 }

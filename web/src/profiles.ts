@@ -23,7 +23,7 @@ const COLORS = ["#1BA1E2", "#0050EF", "#008A00", "#A20025", "#D80073", "#FA6800"
 export function renderProfilesPage(profiles: Profile[], defaultId: string | null, actions: ProfilesPageActions): HTMLElement {
   const root = document.createElement("section");
   root.className = "list-screen profiles-screen";
-  root.innerHTML = '<p class="eyebrow">profiles</p><h1>profiles</h1>';
+  root.innerHTML = '<p class="eyebrow">profiles</p>';
   const grid = document.createElement("section");
   grid.className = "profile-grid";
   for (const profile of profiles) {

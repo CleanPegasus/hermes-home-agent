@@ -49,6 +49,7 @@ describe("waitForJob", () => {
     await vi.advanceTimersByTimeAsync(24_000);
     await expect(pending).resolves.toMatchObject({ status: "done", page_id: "page-1" });
     expect(getJob).toHaveBeenCalledTimes(3);
+    expect(statuses).toContain("still working... 12s");
     expect(statuses).toContain("still working... 24s");
     vi.useRealTimers();
   });
@@ -66,6 +67,30 @@ describe("waitForJob", () => {
       status: "running",
       error: "Hermes is still working after 10 minutes. Check the jobs tile for the latest status."
     });
+    vi.useRealTimers();
+  });
+
+  it("stops polling when the abort signal fires", async () => {
+    vi.useFakeTimers();
+    const getJob = vi.fn(async () => ({ job: job("running") }));
+    const api = {
+      getJob,
+      getJobEvents: vi.fn(async () => "")
+    } as unknown as ApiClient;
+    const controller = new AbortController();
+
+    const pending = waitForJob(api, "job-1", () => undefined, {
+      intervalMs: 1000,
+      maxAttempts: 50,
+      signal: controller.signal
+    });
+
+    await vi.advanceTimersByTimeAsync(1000);
+    const callsBeforeAbort = getJob.mock.calls.length;
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(10_000);
+    await expect(pending).resolves.toMatchObject({ status: "running" });
+    expect(getJob.mock.calls.length).toBe(callsBeforeAbort);
     vi.useRealTimers();
   });
 });

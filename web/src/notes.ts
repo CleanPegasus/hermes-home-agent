@@ -1,5 +1,5 @@
 import type { Category, Note } from "./api";
-import { chip, emptyState } from "./ui";
+import { armConfirm, chip, emptyState, stripMarkdown } from "./ui";
 
 type NotesSurfaceState = {
   configured?: boolean;
@@ -11,7 +11,7 @@ export function renderNotes(notes: Note[], categories: Category[] = [], onOpen?:
   const openNote = onOpen;
   const root = document.createElement("section");
   root.className = "list-screen";
-  root.innerHTML = '<p class="eyebrow">hermes native</p><h1>notes</h1>';
+  root.innerHTML = '<p class="eyebrow">hermes native</p>';
   if (state.configured === false) {
     root.append(emptyState("📂", "connect your obsidian vault", state.warning || undefined));
     return root;
@@ -70,7 +70,7 @@ export function renderNotes(notes: Note[], categories: Category[] = [], onOpen?:
       const title = document.createElement("span");
       title.textContent = note.title;
       const snippet = document.createElement("small");
-      snippet.textContent = note.body_md.slice(0, 140);
+      snippet.textContent = stripMarkdown(note.body_md).slice(0, 140);
       const tags = document.createElement("div");
       tags.className = "note-tags";
       for (const tag of note.tags) {
@@ -148,7 +148,6 @@ export function renderNoteDetail(note: Note, categories: Category[], allNotes: N
       <button type="submit" class="page-action">save</button>
       <button type="button" class="page-action danger" data-action="archive">archive</button>
     </div>
-    <p class="action-status"></p>
   `;
   const title = form.elements.namedItem("title") as HTMLInputElement;
   const category = form.elements.namedItem("category") as HTMLSelectElement;
@@ -179,18 +178,19 @@ export function renderNoteDetail(note: Note, categories: Category[], allNotes: N
       tags: tags.value.split(",").map((tag) => tag.trim()).filter(Boolean)
     });
   });
-  form.querySelector('[data-action="archive"]')?.addEventListener("click", () => {
-    if (window.confirm("archive note?")) {
+  const archiveButton = form.querySelector<HTMLButtonElement>('[data-action="archive"]');
+  if (archiveButton) {
+    armConfirm(archiveButton, "tap again to archive", () => {
       actions.archive(note.id);
-    }
-  });
+    });
+  }
 
   const merge = document.createElement("form");
   merge.className = "merge-form";
   merge.innerHTML = `
     <p class="eyebrow">merge into</p>
     <select name="target"></select>
-    <button type="submit" class="inline-action">merge</button>
+    <button type="button" class="inline-action">merge</button>
   `;
   const target = merge.elements.namedItem("target") as HTMLSelectElement;
   for (const other of allNotes.filter((item) => item.id !== note.id)) {
@@ -199,9 +199,9 @@ export function renderNoteDetail(note: Note, categories: Category[], allNotes: N
     option.textContent = other.title;
     target.append(option);
   }
-  merge.addEventListener("submit", (event) => {
-    event.preventDefault();
-    if (target.value && window.confirm("merge and archive this note?")) {
+  const mergeButton = merge.querySelector<HTMLButtonElement>("button[type='button']")!;
+  armConfirm(mergeButton, "tap again to merge", () => {
+    if (target.value) {
       actions.merge(note.id, target.value);
     }
   });

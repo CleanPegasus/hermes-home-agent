@@ -126,3 +126,72 @@ export function statusEmoji(status: string): string {
     needs_approval: "🛡️"
   }[status] || "•";
 }
+
+export function armConfirm(button: HTMLButtonElement, armedLabel: string, onConfirm: () => void): void {
+  let armedTimer: number | undefined;
+
+  const disarm = () => {
+    button.textContent = button.dataset.originalLabel ?? button.textContent ?? "";
+    button.classList.remove("armed");
+    clearTimeout(armedTimer);
+  };
+
+  button.dataset.originalLabel = button.textContent ?? "";
+
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (button.classList.contains("armed")) {
+      clearTimeout(armedTimer);
+      button.classList.remove("armed");
+      onConfirm();
+      return;
+    }
+    button.dataset.originalLabel = button.textContent ?? "";
+    button.textContent = armedLabel;
+    button.classList.add("armed");
+    armedTimer = window.setTimeout(disarm, 3000);
+  });
+
+  button.addEventListener("blur", () => {
+    if (button.classList.contains("armed")) {
+      disarm();
+    }
+  });
+}
+
+export function stripMarkdown(text: string): string {
+  return text
+    // links [text](url) -> text
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    // bold **text** or __text__
+    .replace(/\*\*([^*]*)\*\*/g, "$1")
+    .replace(/__([^_]*)__/g, "$1")
+    // italic *text* or _text_
+    .replace(/\*([^*]*)\*/g, "$1")
+    .replace(/_([^_]*)_/g, "$1")
+    // inline code
+    .replace(/`([^`]*)`/g, "$1")
+    // blockquote markers
+    .replace(/^>\s?/gm, "")
+    // heading markers
+    .replace(/^#{1,6}\s+/gm, "")
+    .trim();
+}
+
+export function toast(message: string, kind: "info" | "error" = "info"): void {
+  let root = document.getElementById("toast-root");
+  if (!root) {
+    root = document.createElement("div");
+    root.id = "toast-root";
+    document.body.append(root);
+  }
+  const item = document.createElement("div");
+  item.className = `toast toast-${kind}`;
+  item.setAttribute("role", kind === "error" ? "alert" : "status");
+  item.textContent = message;
+  root.append(item);
+  const delay = kind === "error" ? 6000 : 4000;
+  window.setTimeout(() => {
+    item.remove();
+  }, delay);
+}

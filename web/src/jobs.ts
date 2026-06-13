@@ -1,5 +1,5 @@
 import type { ApiClient, Approval, Job, JobEvent, Page } from "./api";
-import { addFact, statusEmoji } from "./ui";
+import { addFact, emptyState, shortDate, statusEmoji } from "./ui";
 
 export function parseSseSteps(text: string): string[] {
   return text
@@ -30,8 +30,12 @@ export function renderWorkingScreen(command: string): HTMLElement {
     <p class="working-command"></p>
     <p class="working-status">starting job...</p>
     <ol class="step-log"></ol>
+    <div class="page-actions working-actions">
+      <button type="button" class="page-action secondary" data-action="background" disabled>run in background</button>
+      <button type="button" class="page-action danger" data-action="cancel" disabled>cancel</button>
+    </div>
   `;
-  root.querySelector(".working-command")!.textContent = command.toLowerCase();
+  root.querySelector(".working-command")!.textContent = command;
   return root;
 }
 
@@ -53,6 +57,7 @@ type WaitForJobOptions = {
   intervalMs?: number;
   maxAttempts?: number;
   onStatus?: (message: string) => void;
+  signal?: AbortSignal;
 };
 
 export async function waitForJob(
@@ -92,6 +97,10 @@ export async function waitForJob(
   }
 
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    if (options.signal?.aborted) {
+      abortController?.abort();
+      return lastJob || (await api.getJob(jobId)).job;
+    }
     const [jobResponse, eventText] = await Promise.all([
       api.getJob(jobId),
       streamStarted ? Promise.resolve("") : api.getJobEvents(jobId)
@@ -100,7 +109,7 @@ export async function waitForJob(
     if (!streamStarted) {
       onSteps(parseSseSteps(eventText));
     }
-    const elapsedSeconds = Math.max(1, Math.round((Date.now() - startedAt + attempt * intervalMs) / 1000));
+    const elapsedSeconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
     options.onStatus?.(`still working... ${elapsedSeconds}s`);
     if (["done", "failed", "needs_approval", "cancelled"].includes(jobResponse.job.status)) {
       abortController?.abort();
@@ -120,7 +129,7 @@ export async function waitForJob(
 export function renderJobsList(jobs: Job[], openJob: (jobId: string) => void): HTMLElement {
   const root = document.createElement("section");
   root.className = "list-screen";
-  root.innerHTML = '<p class="eyebrow">jobs - live ledger</p><h1>jobs</h1>';
+  root.innerHTML = '<p class="eyebrow">jobs - live ledger</p>';
   const list = document.createElement("div");
   list.className = "metro-list";
   for (const job of jobs) {
@@ -134,10 +143,7 @@ export function renderJobsList(jobs: Job[], openJob: (jobId: string) => void): H
     list.append(row);
   }
   if (jobs.length === 0) {
-    const empty = document.createElement("p");
-    empty.className = "empty";
-    empty.textContent = "no jobs yet.";
-    list.append(empty);
+    list.append(emptyState("⚙️", "no jobs yet.", "send hermes a command to get started"));
   }
   root.append(list);
   return root;
@@ -202,8 +208,8 @@ export function renderJobDetail(detail: JobDetail, actions: JobDetailActions): H
 
   const facts = document.createElement("dl");
   facts.className = "fact-list";
-  addFact(facts, "started", detail.job.started_at || "not started");
-  addFact(facts, "finished", detail.job.finished_at || "not finished");
+  addFact(facts, "started", detail.job.started_at ? shortDate(detail.job.started_at) : "not started");
+  addFact(facts, "finished", detail.job.finished_at ? shortDate(detail.job.finished_at) : "not finished");
   if (detail.job.error) {
     addFact(facts, "error", detail.job.error);
   }

@@ -13,7 +13,7 @@ const FALLBACK_EFFORT_OPTIONS: CodexEffort[] = ["low", "medium", "high", "xhigh"
 export function renderCodexSurface(state: CodexState, runs: CodexRun[], actions: CodexActions): HTMLElement {
   const root = document.createElement("section");
   root.className = "list-screen detail-screen";
-  root.innerHTML = '<p class="eyebrow">codex</p><h1>codex</h1>';
+  root.innerHTML = '<p class="eyebrow">codex</p>';
 
   const form = document.createElement("form");
   form.className = "codex-form";
@@ -64,8 +64,11 @@ export function renderCodexSurface(state: CodexState, runs: CodexRun[], actions:
 
   const submit = document.createElement("button");
   submit.type = "submit";
-  submit.textContent = "create chat";
+  submit.textContent = "run codex";
   submit.disabled = !state.enabled || !state.binary_available;
+  if (submit.disabled) {
+    status.textContent = state.disabled_reason || "codex binary is not available.";
+  }
   form.append(promptLabel, effortField, confirmation, submit, status);
   form.addEventListener("submit", (event) => {
     event.preventDefault();

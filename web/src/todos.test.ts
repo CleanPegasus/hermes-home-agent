@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { renderTodos } from "./todos";
 
@@ -33,6 +33,49 @@ describe("todo rendering", () => {
     root.querySelector<HTMLButtonElement>('[data-filter="dropped"]')!.click();
     expect(root.textContent).toContain("dropped-task");
     expect(root.textContent).not.toContain("done-task");
+  });
+
+  it("completing a todo keeps the active project filter and updates counts", async () => {
+    const complete = vi.fn().mockResolvedValue(undefined);
+    const root = renderTodos([
+      todo("task-a", "open", { project_id: "10", project: "alpha" }),
+      todo("task-b", "open", { project_id: "20", project: "beta" })
+    ], {
+      complete,
+      reopen: vi.fn().mockResolvedValue(undefined),
+      drop: vi.fn().mockResolvedValue(undefined)
+    }, {
+      projects: [
+        { id: "10", title: "alpha", hex_color: "#aaa" },
+        { id: "20", title: "beta", hex_color: "#bbb" }
+      ],
+      labels: []
+    });
+
+    // Switch to project "alpha" filter
+    root.querySelector<HTMLButtonElement>('[data-project-id="10"]')!.click();
+    expect(root.textContent).toContain("task-a");
+    expect(root.textContent).not.toContain("task-b");
+
+    // Complete the visible task
+    const doneButton = root.querySelector<HTMLButtonElement>(".inline-action")!;
+    doneButton.click();
+
+    // Flush the microtask queue so the async handler resolves
+    await new Promise((resolve) => setTimeout(resolve));
+
+    // Filter still on alpha project tab — task-a should be gone (now done), task-b not shown
+    expect(complete).toHaveBeenCalledWith("task-a");
+    expect(root.textContent).not.toContain("task-a");
+    expect(root.textContent).not.toContain("task-b");
+
+    // Project filter buttons still present and alpha still active
+    const alphaButton = root.querySelector<HTMLButtonElement>('[data-project-id="10"]')!;
+    expect(alphaButton.classList.contains("active")).toBe(true);
+
+    // Status tab count for "open" decremented from 2 to 1
+    const openTab = root.querySelector<HTMLButtonElement>('[data-filter="open"]')!;
+    expect(openTab.textContent).toBe("open 1");
   });
 
   it("filters by project and label while rendering due dates and priority", () => {
