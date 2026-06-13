@@ -1208,6 +1208,21 @@ def test_postgres_uuid_columns_use_sqlalchemy_uuid_type() -> None:
         assert isinstance(column_type, Uuid), f"{table_name}.{column_name}"
 
 
+def test_postgres_array_columns_use_sqlalchemy_array_type() -> None:
+    from sqlalchemy import Text
+    from sqlalchemy.dialects import postgresql
+    from sqlalchemy.dialects.postgresql import ARRAY
+
+    from app.models import Base
+
+    postgres_schema = (Path(__file__).resolve().parents[2] / "db" / "schema.sql").read_text()
+    dialect = postgresql.dialect()
+    for table_name, column_name in schema_text_array_columns(postgres_schema):
+        column_type = Base.metadata.tables[table_name].columns[column_name].type.dialect_impl(dialect)
+        assert isinstance(column_type, ARRAY), f"{table_name}.{column_name}"
+        assert isinstance(column_type.item_type, Text), f"{table_name}.{column_name}"
+
+
 def load_mcp_module():
     module_path = Path(__file__).resolve().parents[2] / "mcp" / "hermes_home_mcp" / "server.py"
     spec = importlib.util.spec_from_file_location("hermes_home_mcp_schema_test_server", module_path)
@@ -1256,5 +1271,24 @@ def schema_uuid_columns(schema: str) -> set[tuple[str, str]]:
                 continue
             parts = line.split(None, 2)
             if len(parts) >= 2 and parts[1].upper() == "UUID":
+                columns.add((table_name, parts[0].strip('"')))
+    return columns
+
+
+def schema_text_array_columns(schema: str) -> set[tuple[str, str]]:
+    matches = re.finditer(
+        r"CREATE TABLE IF NOT EXISTS\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*?)\)\s*(?:;|$)",
+        schema,
+        re.IGNORECASE | re.DOTALL,
+    )
+    columns: set[tuple[str, str]] = set()
+    for match in matches:
+        table_name = match.group(1)
+        for raw_line in match.group(2).splitlines():
+            line = raw_line.strip().rstrip(",")
+            if not line or line.startswith("--"):
+                continue
+            parts = line.split(None, 2)
+            if len(parts) >= 2 and parts[1].upper() == "TEXT[]":
                 columns.add((table_name, parts[0].strip('"')))
     return columns

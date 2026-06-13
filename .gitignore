@@ -21,3 +21,4 @@ test-results/
 deploy/.env.production
 deploy/nginx/.htpasswd
 deploy/data/
+deploy/vikunja/
