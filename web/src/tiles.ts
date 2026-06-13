@@ -57,6 +57,10 @@ export interface PackedTile {
   shape: TileShape;
   col: number;
   row: number;
+  /** Final column span. Equals the shape span unless widened by the fill pass. */
+  colSpan: number;
+  /** Final row span. May exceed the shape span when the fill pass grows a tile to flush the bottom edge. */
+  rowSpan: number;
 }
 
 const METRO_TILE_SHAPES_BY_KEY: Record<string, TileShape> = {
@@ -137,7 +141,101 @@ export function packTiles(tiles: Tile[], columns: number): PackedTile[] {
     for (let offset = 0; offset < Math.min(colSpan, safeColumns); offset += 1) {
       heights[col + offset] = row + rowSpan;
     }
-    packed.push({ tile: picked.tile, shape: picked.shape, col, row });
+    packed.push({ tile: picked.tile, shape: picked.shape, col, row, colSpan, rowSpan });
+  }
+
+  return fillBottomRows(packed, safeColumns);
+}
+
+/** A packed grid is flush when every column reaches the same bottom edge (no black notch). */
+export function isFlushPack(packed: PackedTile[], columns: number): boolean {
+  const safeColumns = Math.max(1, Math.floor(columns));
+  if (packed.length === 0) {
+    return true;
+  }
+  const heights = Array(safeColumns).fill(0) as number[];
+  for (const item of packed) {
+    for (let col = item.col; col < item.col + item.colSpan; col += 1) {
+      heights[col] = Math.max(heights[col], item.row + item.rowSpan);
+    }
+  }
+  const target = Math.max(...heights);
+  return heights.every((value) => value === target);
+}
+
+/**
+ * Picks the column count that fills flush with the available tiles, so the grid never
+ * shows black gaps "due to lack of tiles". Candidates are tried in order (largest first
+ * for the viewport); the first that packs flush wins, falling back to the first candidate.
+ * Because per-tile shape is a preference, the same tiles tessellate cleanly at several
+ * counts — this just selects one that has no trailing notch for the current tile set.
+ */
+export function bestColumnCount(tiles: Tile[], candidates: number[]): number {
+  for (const cols of candidates) {
+    if (isFlushPack(packTiles(tiles, cols), cols)) {
+      return cols;
+    }
+  }
+  return candidates[0];
+}
+
+/**
+ * Grows the bottom-most tile of each short column downward so the grid ends on a
+ * flush edge with no trailing black space. Only ever fills cells that are already
+ * empty, so the no-interior-holes invariant is preserved.
+ *
+ * A single-column tile at the bottom of a short column always grows. A two-column
+ * tile grows only when both of its columns are equally short (otherwise growing it
+ * would collide with a taller neighbour), leaving at most a small bottom notch for
+ * tile sets that cannot tessellate — see the per-key shape tuning that keeps the
+ * live home set flush.
+ */
+export function fillBottomRows(packed: PackedTile[], columns: number): PackedTile[] {
+  const safeColumns = Math.max(1, Math.floor(columns));
+  if (packed.length === 0) {
+    return packed;
+  }
+  const columnHeights = (): number[] => {
+    const heights = Array(safeColumns).fill(0) as number[];
+    for (const item of packed) {
+      for (let col = item.col; col < item.col + item.colSpan; col += 1) {
+        heights[col] = Math.max(heights[col], item.row + item.rowSpan);
+      }
+    }
+    return heights;
+  };
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const heights = columnHeights();
+    const target = Math.max(...heights);
+    for (let col = 0; col < safeColumns; col += 1) {
+      if (heights[col] >= target) {
+        continue;
+      }
+      // The tile sitting flush at the bottom of this column.
+      const bottom = packed.find(
+        (item) => item.col <= col && col < item.col + item.colSpan && item.row + item.rowSpan === heights[col]
+      );
+      if (!bottom) {
+        continue;
+      }
+      // Safe to grow only if nothing sits below the tile in any column it spans.
+      const bottomEdge = bottom.row + bottom.rowSpan;
+      let safe = true;
+      for (let span = bottom.col; span < bottom.col + bottom.colSpan; span += 1) {
+        if (heights[span] !== bottomEdge) {
+          safe = false;
+          break;
+        }
+      }
+      if (!safe) {
+        continue;
+      }
+      bottom.rowSpan = target - bottom.row;
+      changed = true;
+    }
   }
 
   return packed;
@@ -268,9 +366,11 @@ function backHasContent(face: TileFace): boolean {
   return face.count !== undefined || Boolean(face.line) || Boolean(face.sub) || Boolean(face.meta);
 }
 
-export function renderTile(tile: Tile, onOpen: (key: string) => void, index = 0, packed?: Pick<PackedTile, "shape" | "col" | "row">): HTMLButtonElement {
+export function renderTile(tile: Tile, onOpen: (key: string) => void, index = 0, packed?: Pick<PackedTile, "shape" | "col" | "row" | "colSpan" | "rowSpan">): HTMLButtonElement {
   const shape = packed?.shape ?? getTileShape(tile);
-  const [colSpan, rowSpan] = shapeSize(shape);
+  const [shapeColSpan, shapeRowSpan] = shapeSize(shape);
+  const colSpan = packed?.colSpan ?? shapeColSpan;
+  const rowSpan = packed?.rowSpan ?? shapeRowSpan;
   const button = document.createElement("button");
   button.className = `tile tile-${tile.size} tile-shape-${shape}`;
   button.style.setProperty("--tile-color", tile.color);
@@ -316,13 +416,25 @@ export function renderTile(tile: Tile, onOpen: (key: string) => void, index = 0,
 export function renderTileGrid(tiles: Tile[], onOpen: (key: string) => void): HTMLElement {
   const grid = document.createElement("section");
   grid.className = "tile-grid";
+  // Square the rows: row height = measured column width, so tiles stay square at any count.
+  const sizeRows = () => {
+    const cols = Number(grid.style.getPropertyValue("--tile-cols")) || 4;
+    const gap = parseFloat(getComputedStyle(grid).getPropertyValue("--tile-gap")) || 6;
+    const width = grid.clientWidth;
+    if (width > 0) {
+      grid.style.setProperty("--tile-row", `${(width - (cols - 1) * gap) / cols}px`);
+    }
+  };
   const renderPackedTiles = () => {
     grid.replaceChildren();
-    for (const [index, packed] of packTiles(tiles, gridColumnCount()).entries()) {
+    const columns = bestColumnCount(tiles, columnCandidates());
+    grid.style.setProperty("--tile-cols", String(columns));
+    for (const [index, packed] of packTiles(tiles, columns).entries()) {
       grid.append(renderTile(packed.tile, onOpen, index, packed));
     }
     if (typeof window !== "undefined" && "requestAnimationFrame" in window) {
       window.requestAnimationFrame(() => {
+        sizeRows();
         for (const tile of grid.querySelectorAll<HTMLElement>(".tile")) {
           fitTileText(tile);
         }
@@ -332,14 +444,20 @@ export function renderTileGrid(tiles: Tile[], onOpen: (key: string) => void): HT
   renderPackedTiles();
   const media = typeof window !== "undefined" && "matchMedia" in window ? window.matchMedia("(min-width: 760px)") : null;
   media?.addEventListener?.("change", renderPackedTiles);
+  window.addEventListener?.("resize", sizeRows);
   return grid;
 }
 
-function gridColumnCount(): number {
+/**
+ * Column counts to try for the current viewport, largest (densest) first. Desktop prefers
+ * 6 but can drop to 5/4; mobile prefers 4 but can drop to 3 — so a tile set that would
+ * leave a bottom notch at the preferred count falls back to one that fills flush.
+ */
+function columnCandidates(): number[] {
   if (typeof window !== "undefined" && "matchMedia" in window && window.matchMedia("(min-width: 760px)").matches) {
-    return 6;
+    return [6, 5, 4, 3, 2];
   }
-  return 4;
+  return [4, 3, 2];
 }
 
 if (typeof document !== "undefined") {

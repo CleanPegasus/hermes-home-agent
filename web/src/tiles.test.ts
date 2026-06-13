@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { Tile, TileSize } from "./api";
 import { tileIcon } from "./icons";
 import { extractActionButtons } from "./pages";
-import { getTileShape, packTiles, renderTileFace, renderTile, renderTileGrid, trimLastWord } from "./tiles";
+import { bestColumnCount, getTileShape, isFlushPack, packTiles, renderTileFace, renderTile, renderTileGrid, trimLastWord } from "./tiles";
 
 function makeTile(key: string, size: TileSize, sort: number): Tile {
   return {
@@ -118,6 +118,39 @@ describe("tile rendering", () => {
     expect(assertNoPackedHoles(packTiles(tiles, 6), 6)).toBe(true);
   });
 
+  // Mirrors SEED_TILES in server/app/db.py — the exact set + sizes that ship.
+  const SEED_TILES: Array<[string, TileSize, number]> = [
+    ["jobs", "w", 10], ["todos", "m", 20], ["calendar", "m", 30], ["notes", "m", 40],
+    ["approvals", "s", 50], ["spend", "s", 60], ["channels", "s", 70], ["vitals", "s", 80],
+    ["codex", "s", 90], ["history", "w", 95], ["profiles", "w", 100]
+  ];
+  const seedTiles = () => SEED_TILES.map(([key, size, sort]) => makeTile(key, size, sort));
+  const MOBILE_CANDIDATES = [4, 3, 2];
+  const DESKTOP_CANDIDATES = [6, 5, 4, 3, 2];
+
+  it("picks a flush column count for the live home tile set at both breakpoints", () => {
+    const tiles = seedTiles();
+    const mobile = bestColumnCount(tiles, MOBILE_CANDIDATES);
+    const desktop = bestColumnCount(tiles, DESKTOP_CANDIDATES);
+
+    expect(isFlushPack(packTiles(tiles, mobile), mobile)).toBe(true);
+    expect(isFlushPack(packTiles(tiles, desktop), desktop)).toBe(true);
+    // flush at the chosen counts means a perfect rectangle with no black notch
+    expect(assertFlushRectangle(packTiles(tiles, mobile), mobile)).toBe(true);
+    expect(assertFlushRectangle(packTiles(tiles, desktop), desktop)).toBe(true);
+  });
+
+  it("stays flush as tiles are removed (no black space due to lack of tiles)", () => {
+    const full = seedTiles();
+    for (let count = 1; count <= full.length; count += 1) {
+      const subset = full.slice(0, count);
+      const mobile = bestColumnCount(subset, MOBILE_CANDIDATES);
+      const desktop = bestColumnCount(subset, DESKTOP_CANDIDATES);
+      expect(isFlushPack(packTiles(subset, mobile), mobile)).toBe(true);
+      expect(isFlushPack(packTiles(subset, desktop), desktop)).toBe(true);
+    }
+  });
+
   it("packs randomized shape sequences without covered-cell holes", () => {
     const sizes: TileSize[] = ["s", "w", "t", "l"];
     for (let seed = 0; seed < 50; seed += 1) {
@@ -140,7 +173,8 @@ describe("tile rendering", () => {
     expect(buttons[1].className).toContain("tile-shape-large");
     expect(buttons[2].className).toContain("tile-shape-tall");
     expect(buttons[0].style.gridColumn).toMatch(/span 2/);
-    expect(buttons[0].style.gridRow).toMatch(/span 1/);
+    // Row span may be grown by the bottom-fill pass to flush the grid edge.
+    expect(buttons[0].style.gridRow).toMatch(/^1 \/ span \d+$/);
     expect(buttons.map((button) => button.style.getPropertyValue("--tile-index"))).toEqual(["0", "1", "2"]);
   });
 
@@ -157,12 +191,11 @@ function assertNoPackedHoles(packed: ReturnType<typeof packTiles>, columns: numb
   const occupied = new Set<string>();
   const heights = Array(columns).fill(0) as number[];
   for (const item of packed) {
-    const [colSpan, rowSpan] = shapeSize(item.shape);
-    for (let col = item.col; col < item.col + colSpan; col += 1) {
-      for (let row = item.row; row < item.row + rowSpan; row += 1) {
+    for (let col = item.col; col < item.col + item.colSpan; col += 1) {
+      for (let row = item.row; row < item.row + item.rowSpan; row += 1) {
         occupied.add(`${col}:${row}`);
       }
-      heights[col] = Math.max(heights[col], item.row + rowSpan);
+      heights[col] = Math.max(heights[col], item.row + item.rowSpan);
     }
   }
   for (let col = 0; col < columns; col += 1) {
@@ -175,17 +208,27 @@ function assertNoPackedHoles(packed: ReturnType<typeof packTiles>, columns: numb
   return true;
 }
 
-function shapeSize(shape: string): [number, number] {
-  if (shape === "wide") {
-    return [2, 1];
+// Every cell of the columns × maxRow rectangle is covered exactly once (flush, no overlaps).
+function assertFlushRectangle(packed: ReturnType<typeof packTiles>, columns: number): boolean {
+  const counts = new Map<string, number>();
+  let maxRow = 0;
+  for (const item of packed) {
+    for (let col = item.col; col < item.col + item.colSpan; col += 1) {
+      for (let row = item.row; row < item.row + item.rowSpan; row += 1) {
+        const cell = `${col}:${row}`;
+        counts.set(cell, (counts.get(cell) ?? 0) + 1);
+      }
+    }
+    maxRow = Math.max(maxRow, item.row + item.rowSpan);
   }
-  if (shape === "tall") {
-    return [1, 2];
+  for (let col = 0; col < columns; col += 1) {
+    for (let row = 0; row < maxRow; row += 1) {
+      if (counts.get(`${col}:${row}`) !== 1) {
+        return false;
+      }
+    }
   }
-  if (shape === "large") {
-    return [2, 2];
-  }
-  return [1, 1];
+  return true;
 }
 
 describe("trimLastWord", () => {

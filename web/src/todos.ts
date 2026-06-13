@@ -276,10 +276,8 @@ function actionButton(label: string, onClick: () => void, className = ""): HTMLB
 }
 
 function todoMeta(todo: Todo): string {
+  // project is rendered as a chip, so it is intentionally omitted from the meta line
   const parts = [todo.provider ? `${todo.provider} · ${todo.source}` : `added by ${todo.source}`];
-  if (todo.project) {
-    parts.push(todo.project);
-  }
   if (todo.scheduled_for) {
     parts.push(`scheduled ${formatDate(todo.scheduled_for)}`);
   }
