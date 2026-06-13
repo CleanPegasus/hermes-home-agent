@@ -138,7 +138,9 @@ export function renderJobsList(jobs: Job[], openJob: (jobId: string) => void): H
     row.className = "list-row";
     row.innerHTML = "<span></span><small></small>";
     row.querySelector("span")!.textContent = job.command;
-    row.querySelector("small")!.textContent = `${statusEmoji(job.status)} ${job.status}`;
+    const status = row.querySelector("small")!;
+    status.textContent = `${statusEmoji(job.status)} ${job.status}`;
+    status.className = `job-status job-status-${job.status}`;
     row.addEventListener("click", () => openJob(job.id));
     list.append(row);
   }
