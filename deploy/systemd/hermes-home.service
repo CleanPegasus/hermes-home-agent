@@ -1,0 +1,17 @@
+[Unit]
+Description=Hermes Home API
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/hermes-home/server
+EnvironmentFile=/opt/hermes-home/deploy/.env.production
+ExecStart=/opt/hermes-home/server/.venv/bin/python -m uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+User=hermes
+Group=hermes
+
+[Install]
+WantedBy=multi-user.target

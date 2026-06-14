@@ -34,9 +34,9 @@ VITE_API_BASE=http://127.0.0.1:8000 npm run dev -- --host 127.0.0.1 --port 5173
 
 Open `http://127.0.0.1:5173/`.
 
-## Unified HTTP deployment
+## Hybrid systemd deployment
 
-The VPS deployment runs Postgres, the FastAPI app, a dedicated `webapp` container for the built PWA, and an edge `nginx` container from one Compose file. Nginx serves public traffic on port `80`, proxies `/` to `webapp`, and proxies `/api/` to the app container, so keep `VITE_API_BASE=` empty for same-origin browser requests.
+FastAPI app runs as a host systemd service so `AGENT_CMD` can call the local Hermes CLI directly. Docker Compose still runs Postgres, Vikunja, the built `webapp`, and edge `nginx`. Nginx serves public traffic on port `80`, proxies `/` to `webapp`, and proxies `/api/` to the host app through `host.docker.internal:8000`, so keep `VITE_API_BASE=` empty for same-origin browser requests.
 
 Create production env values:
 
@@ -49,19 +49,21 @@ import secrets
 path = Path("deploy/.env.production")
 text = path.read_text()
 text = text.replace("HOME_API_TOKEN=change-me", f"HOME_API_TOKEN={secrets.token_urlsafe(32)}")
-text = text.replace("POSTGRES_PASSWORD=change-me", f"POSTGRES_PASSWORD={secrets.token_urlsafe(32)}")
+postgres_password = secrets.token_urlsafe(32)
+text = text.replace("POSTGRES_PASSWORD=change-me", f"POSTGRES_PASSWORD={postgres_password}")
+text = text.replace("postgresql+psycopg://hermes:change-me@127.0.0.1:5432/hermes_home", f"postgresql+psycopg://hermes:{postgres_password}@127.0.0.1:5432/hermes_home")
 text = text.replace("VIKUNJA_POSTGRES_PASSWORD=change-me", f"VIKUNJA_POSTGRES_PASSWORD={secrets.token_urlsafe(32)}")
 text = text.replace("VIKUNJA_SERVICE_SECRET=change-me", f"VIKUNJA_SERVICE_SECRET={secrets.token_urlsafe(32)}")
 path.write_text(text)
 PY
 ```
 
-Edit `deploy/.env.production` for `PUBLIC_BASE_URL`, `CORS_ORIGINS`, Obsidian, and optional `AGENT_CMD`, then start the stack. Vikunja stays internal to the Compose network at `http://vikunja:3456`; nginx does not expose the Vikunja UI or API. If `AGENT_CMD` is set, it must point to a command that exists inside the app container; leave it empty for fallback-mode smoke tests.
+Edit `deploy/.env.production` for `PUBLIC_BASE_URL`, `CORS_ORIGINS`, `OBSIDIAN_VAULT_PATH`, and `AGENT_CMD`. The default `AGENT_CMD` expects the Hermes CLI at `/usr/local/bin/hermes` on the VPS host. Vikunja is reachable only on the VPS loopback at `http://127.0.0.1:3456`; nginx does not expose the Vikunja UI or API.
 
-Create the nginx Basic Auth password file and the host-side Vikunja token file path:
+Create the nginx Basic Auth password file, Obsidian vault folder, and host-side Vikunja token file path:
 
 ```bash
-mkdir -p deploy/nginx deploy/data/obsidian-vault deploy/vikunja
+mkdir -p deploy/nginx deploy/vikunja /opt/hermes-home/obsidian-vault
 read -rp "Nginx username: " NGINX_USER
 read -rsp "Nginx password: " NGINX_PASSWORD
 printf '\n'
@@ -77,16 +79,23 @@ docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml up -
 docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml ps
 ```
 
-Restart the app, webapp, and nginx after code or env changes:
+Install or refresh the host FastAPI app service:
 
 ```bash
-bin/hermes-home-restart
+sudo bin/hermes-home-install-systemd
+```
+
+Restart the systemd app plus Docker support services after code or env changes:
+
+```bash
+sudo bin/hermes-home-restart
 ```
 
 Inspect logs:
 
 ```bash
-docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml logs -f app webapp nginx vikunja
+journalctl -u hermes-home.service -f
+docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml logs -f webapp nginx vikunja
 ```
 
 Run the deployment self-check:

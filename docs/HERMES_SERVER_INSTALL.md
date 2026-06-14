@@ -27,13 +27,14 @@ The required v1 smoke test is:
 
 ## Files That Matter
 
-- `docker-compose.yml`: Postgres with pgvector plus the FastAPI app server.
+- `deploy/systemd/hermes-home.service`: host FastAPI app service that can invoke the local Hermes CLI.
+- `deploy/compose.prod.yml`: Postgres, Vikunja, static webapp, and edge nginx support services.
 - `db/schema.sql`: Postgres schema and seed data.
 - `server/`: FastAPI app server.
 - `mcp/`: Hermes Home MCP server package.
 - `skills/`: custom Hermes skills to pin outside autonomous skill curation.
 - `web/`: Vite TypeScript PWA.
-- `.env.example`: env var template.
+- `deploy/.env.production.example`: production env var template.
 
 ## Install The App Server
 
@@ -46,57 +47,63 @@ git clone <repo-url> /opt/hermes-home
 cd /opt/hermes-home
 ```
 
-Create the environment file:
+Create the production environment file:
 
 ```bash
-cp .env.example .env
+cp deploy/.env.production.example deploy/.env.production
 python3 - <<'PY'
 from pathlib import Path
 import secrets
 
-path = Path(".env")
+path = Path("deploy/.env.production")
 text = path.read_text()
-text = text.replace("HOME_API_TOKEN=dev-token", f"HOME_API_TOKEN={secrets.token_urlsafe(32)}")
-text = text.replace("POSTGRES_PASSWORD=hermes_dev_password", f"POSTGRES_PASSWORD={secrets.token_urlsafe(32)}")
-text = text.replace("PUBLIC_BASE_URL=http://127.0.0.1:8000", "PUBLIC_BASE_URL=http://127.0.0.1:8000")
+text = text.replace("HOME_API_TOKEN=change-me", f"HOME_API_TOKEN={secrets.token_urlsafe(32)}")
+postgres_password = secrets.token_urlsafe(32)
+text = text.replace("POSTGRES_PASSWORD=change-me", f"POSTGRES_PASSWORD={postgres_password}")
+text = text.replace("postgresql+psycopg://hermes:change-me@127.0.0.1:5432/hermes_home", f"postgresql+psycopg://hermes:{postgres_password}@127.0.0.1:5432/hermes_home")
+text = text.replace("VIKUNJA_POSTGRES_PASSWORD=change-me", f"VIKUNJA_POSTGRES_PASSWORD={secrets.token_urlsafe(32)}")
+text = text.replace("VIKUNJA_SERVICE_SECRET=change-me", f"VIKUNJA_SERVICE_SECRET={secrets.token_urlsafe(32)}")
 path.write_text(text)
 PY
 ```
 
-Edit `.env` and set:
+Edit `deploy/.env.production` and set:
 
 ```dotenv
 HERMES_ENV=production
-CORS_ORIGINS=http://127.0.0.1:5173,http://localhost:5173,https://<tailnet-hostname>
-PUBLIC_BASE_URL=https://<tailnet-hostname>
+CORS_ORIGINS=http://<vps-ip-or-hostname>
+PUBLIC_BASE_URL=http://<vps-ip-or-hostname>
 VITE_API_BASE=
-VIKUNJA_URL=https://<vikunja-host>
+DATABASE_URL=postgresql+psycopg://hermes:<postgres-password>@127.0.0.1:5432/hermes_home
+VIKUNJA_URL=http://127.0.0.1:3456
 VIKUNJA_TOKEN=<api-token>
 VIKUNJA_DEFAULT_PROJECT_ID=<project-id>
 OBSIDIAN_VAULT_PATH=/opt/hermes-home/obsidian-vault
+AGENT_CMD=/usr/local/bin/hermes run --profile home --input-env HERMES_HOME_COMMAND
 SERVER_PORT=8000
 POSTGRES_PORT=5432
+VIKUNJA_PORT=3456
 CODEX_ENABLED=false
 HERMES_STRICT_DEPLOYMENT_CHECKS=true
 ```
 
-Create the Vikunja API token in Vikunja under Settings > API Tokens. Give it task read/write access for the project Hermes should use for natural-language todo capture. Do not commit the token; keep it only in the deployed `.env`.
+Create the Vikunja API token in Vikunja under Settings > API Tokens. Give it task read/write access for the project Hermes should use for natural-language todo capture. Do not commit the token; keep it only in the deployed `deploy/.env.production`.
 
 Set `OBSIDIAN_VAULT_PATH` to the vault folder that the server can read and write. Hermes Home stores notes as markdown files with YAML frontmatter in that folder; sync the folder externally with Obsidian Sync, Syncthing, iCloud, or your existing vault sync path.
 
-Start Postgres and the app server:
+Start the Docker support services, then install the host app service:
 
 ```bash
-docker compose up -d postgres app
-docker compose ps
-docker compose logs --tail=100 app
+docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml up -d --build postgres vikunja-postgres vikunja webapp nginx
+sudo bin/hermes-home-install-systemd
+systemctl status hermes-home.service --no-pager
 ```
 
 Verify the API:
 
 ```bash
 set -a
-. ./.env
+. deploy/.env.production
 set +a
 
 curl -fsS \
@@ -106,14 +113,14 @@ curl -fsS \
 
 Expected: JSON with seeded `jobs`, `todos`, `calendar`, `notes`, `approvals`, and `spend` tiles.
 
-## Unified HTTP Docker Compose Deployment
+## Hybrid Systemd And Docker Deployment
 
-For a single VPS deployment, prefer the production Compose stack instead of manually running the API and web app outside Docker. It starts:
+For a single VPS deployment, use the host `hermes-home.service` for FastAPI and the production Compose stack for support services. This lets the app invoke the local Hermes CLI directly through `AGENT_CMD` while keeping database, Vikunja, static web, and edge auth packaging simple.
 
 - `postgres`: pgvector Postgres with a persistent `postgres-data` volume.
-- `app`: the FastAPI server image built from `server/Dockerfile`.
+- `hermes-home.service`: the FastAPI server on `127.0.0.1:8000`.
 - `webapp`: the static web image built from `web/Dockerfile`, serving the built PWA inside the Compose network.
-- `nginx`: the public edge image built from `deploy/nginx/Dockerfile`, proxying `/` to `webapp:80` and `/api/` to `app:8000`.
+- `nginx`: the public edge image built from `deploy/nginx/Dockerfile`, proxying `/` to `webapp:80` and `/api/` to `host.docker.internal:8000`.
 
 Copy and edit the production env file:
 
@@ -127,19 +134,21 @@ import secrets
 path = Path("deploy/.env.production")
 text = path.read_text()
 text = text.replace("HOME_API_TOKEN=change-me", f"HOME_API_TOKEN={secrets.token_urlsafe(32)}")
-text = text.replace("POSTGRES_PASSWORD=change-me", f"POSTGRES_PASSWORD={secrets.token_urlsafe(32)}")
+postgres_password = secrets.token_urlsafe(32)
+text = text.replace("POSTGRES_PASSWORD=change-me", f"POSTGRES_PASSWORD={postgres_password}")
+text = text.replace("postgresql+psycopg://hermes:change-me@127.0.0.1:5432/hermes_home", f"postgresql+psycopg://hermes:{postgres_password}@127.0.0.1:5432/hermes_home")
 text = text.replace("VIKUNJA_POSTGRES_PASSWORD=change-me", f"VIKUNJA_POSTGRES_PASSWORD={secrets.token_urlsafe(32)}")
 text = text.replace("VIKUNJA_SERVICE_SECRET=change-me", f"VIKUNJA_SERVICE_SECRET={secrets.token_urlsafe(32)}")
 path.write_text(text)
 PY
 ```
 
-Set `PUBLIC_BASE_URL` and `CORS_ORIGINS` to the HTTP origin users will open, for example `http://<vps-ip>` or `http://home.example.com`. Keep `VITE_API_BASE=` empty; nginx makes browser API calls same-origin. The production compose file also starts a local Vikunja service and its own Postgres database. Vikunja stays internal to the Compose network at `http://vikunja:3456`; nginx does not expose the Vikunja UI or API. Set `OBSIDIAN_VAULT_HOST_PATH` to the host folder that should be mounted at `/data/obsidian-vault` inside the app container. If `AGENT_CMD` is set, it must point to a command available inside the app container; leave it empty for fallback-mode smoke tests.
+Set `PUBLIC_BASE_URL` and `CORS_ORIGINS` to the HTTP origin users will open, for example `http://<vps-ip>` or `http://home.example.com`. Keep `VITE_API_BASE=` empty; nginx makes browser API calls same-origin. The production compose file starts local Postgres and Vikunja services exposed only on `127.0.0.1`, so the host app uses `DATABASE_URL=...@127.0.0.1:5432/...` and `VIKUNJA_URL=http://127.0.0.1:3456`. Set `OBSIDIAN_VAULT_PATH` to the host folder the `hermes-home.service` user can read and write. Set `AGENT_CMD` to the Hermes CLI installed on the VPS host.
 
 Create the nginx Basic Auth password file and the host-side Vikunja token file path. Nginx validates this browser-facing username/password and injects the app bearer token upstream, so browser users do not need to know `HOME_API_TOKEN`.
 
 ```bash
-mkdir -p deploy/nginx deploy/data/obsidian-vault deploy/vikunja
+mkdir -p deploy/nginx deploy/vikunja /opt/hermes-home/obsidian-vault
 read -rp "Nginx username: " NGINX_USER
 read -rsp "Nginx password: " NGINX_PASSWORD
 printf '\n'
@@ -154,14 +163,16 @@ Start the whole stack:
 
 ```bash
 docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml up -d --build
+sudo bin/hermes-home-install-systemd
 docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml ps
-docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml logs --tail=100 app webapp nginx vikunja
+journalctl -u hermes-home.service -n 100 --no-pager
+docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml logs --tail=100 webapp nginx vikunja
 ```
 
 Restart after code or env changes:
 
 ```bash
-bin/hermes-home-restart
+sudo bin/hermes-home-restart
 ```
 
 Run the app self-check through nginx:
@@ -184,7 +195,7 @@ If this server already has legacy notes in the database, export them into the va
 ```bash
 cd /opt/hermes-home/server
 set -a
-. ../.env
+. ../deploy/.env.production
 set +a
 uv run python -m app.migrate_notes
 uv run python -m app.migrate_notes
@@ -297,7 +308,7 @@ Smoke test the MCP entrypoint:
 
 ```bash
 set -a
-. /opt/hermes-home/.env
+. /opt/hermes-home/deploy/.env.production
 set +a
 
 DATABASE_URL="postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB}" \
@@ -323,7 +334,7 @@ Register this stdio server in the Hermes `home` profile. The exact config file d
 }
 ```
 
-Use the actual values from `/opt/hermes-home/.env`. Keep this MCP server enabled only for the Hermes `home` profile.
+Use the actual values from `/opt/hermes-home/deploy/.env.production`. Keep this MCP server enabled only for the Hermes `home` profile.
 
 ## Install And Pin The Custom Skills
 
@@ -347,7 +358,7 @@ Hermes must follow these rules in the `home` profile:
 
 ## Wire The App Server To Hermes
 
-The app server invokes Hermes through `AGENT_CMD`. Set this in `/opt/hermes-home/.env`.
+The app server invokes Hermes through `AGENT_CMD`. Set this in `/opt/hermes-home/deploy/.env.production`.
 
 The app server provides these env vars to the command:
 
@@ -367,12 +378,12 @@ Use the real Hermes CLI/API command for this server. The invoked Hermes process 
 
 If `AGENT_CMD` is empty, the app server uses a local fallback agent. That is useful for checking the app, but it is not the real Hermes integration.
 
-Restart the app after editing `.env`:
+Restart the app after editing `deploy/.env.production`:
 
 ```bash
 cd /opt/hermes-home
-docker compose up -d app
-docker compose logs --tail=100 app
+sudo systemctl restart hermes-home.service
+journalctl -u hermes-home.service -n 100 --no-pager
 ```
 
 Queued or running jobs found during app startup are marked failed with a recovery event. That prevents stuck rows after restart, but it is not a durable worker queue; long-running external job ownership should move to a persistent queue before multi-worker deployment.
@@ -391,7 +402,7 @@ Then verify from the API:
 
 ```bash
 set -a
-. /opt/hermes-home/.env
+. /opt/hermes-home/deploy/.env.production
 set +a
 
 curl -fsS -H "Authorization: Bearer $HOME_API_TOKEN" \
@@ -458,7 +469,8 @@ Rollback is:
 cd /opt/hermes-home
 git fetch origin
 git checkout <last-known-good-ref>
-docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml up -d --build app webapp nginx
+docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml up -d --build webapp nginx
+sudo systemctl restart hermes-home.service
 ```
 
 Then rerun the end-to-end smoke test.
