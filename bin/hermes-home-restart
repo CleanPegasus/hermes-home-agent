@@ -6,6 +6,7 @@ cd "$ROOT_DIR"
 
 ENV_FILE="${HERMES_HOME_PROD_ENV_FILE:-deploy/.env.production}"
 COMPOSE_FILE="${HERMES_HOME_PROD_COMPOSE_FILE:-deploy/compose.prod.yml}"
+SYSTEMD_SERVICE="${HERMES_HOME_SYSTEMD_SERVICE:-hermes-home.service}"
 
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "missing $ENV_FILE"
@@ -13,6 +14,8 @@ if [[ ! -f "$ENV_FILE" ]]; then
   exit 1
 fi
 
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --build --force-recreate app webapp nginx vikunja
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --build --force-recreate postgres vikunja-postgres vikunja webapp nginx
+systemctl restart "$SYSTEMD_SERVICE"
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs --tail=80 app webapp nginx vikunja
+journalctl -u "$SYSTEMD_SERVICE" -n 80 --no-pager
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs --tail=80 webapp nginx vikunja

@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="${HERMES_HOME_ROOT:-/opt/hermes-home}"
+SERVICE_FILE="${HERMES_HOME_SYSTEMD_UNIT:-/etc/systemd/system/hermes-home.service}"
+SERVICE_USER="${HERMES_HOME_SERVICE_USER:-hermes}"
+SERVICE_GROUP="${HERMES_HOME_SERVICE_GROUP:-hermes}"
+
+if [[ ! -f "$ROOT_DIR/deploy/.env.production" ]]; then
+  echo "missing $ROOT_DIR/deploy/.env.production"
+  echo "copy deploy/.env.production.example to deploy/.env.production and fill in secrets first"
+  exit 1
+fi
+
+if ! getent group "$SERVICE_GROUP" >/dev/null 2>&1; then
+  groupadd --system "$SERVICE_GROUP"
+fi
+
+if ! id "$SERVICE_USER" >/dev/null 2>&1; then
+  useradd --system --gid "$SERVICE_GROUP" --home "$ROOT_DIR" --shell /usr/sbin/nologin "$SERVICE_USER"
+fi
+
+mkdir -p "$ROOT_DIR/obsidian-vault"
+chown -R "$SERVICE_USER:$SERVICE_GROUP" "$ROOT_DIR/server" "$ROOT_DIR/obsidian-vault"
+
+python3 -m venv "$ROOT_DIR/server/.venv"
+pip() {
+  "$ROOT_DIR/server/.venv/bin/pip" "$@"
+}
+pip install --upgrade pip
+pip install -e "$ROOT_DIR/server" "psycopg[binary]>=3.2"
+chown -R "$SERVICE_USER:$SERVICE_GROUP" "$ROOT_DIR/server" "$ROOT_DIR/obsidian-vault"
+
+install -m 0644 "$ROOT_DIR/deploy/systemd/hermes-home.service" "$SERVICE_FILE"
+systemctl daemon-reload
+systemctl enable --now hermes-home.service
+systemctl status hermes-home.service --no-pager
