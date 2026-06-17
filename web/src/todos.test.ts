@@ -3,14 +3,14 @@ import { describe, expect, it, vi } from "vitest";
 import { renderTodos } from "./todos";
 
 describe("todo rendering", () => {
-  it("renders a Vikunja setup hint when todos are unconfigured", () => {
+  it("renders a Todoist setup hint when todos are unconfigured", () => {
     const root = renderTodos([], undefined, {
       configured: false,
-      warning: "Vikunja todo integration is not configured. Set VIKUNJA_URL, VIKUNJA_TOKEN to use todos."
+      warning: "Todoist todo integration is not configured. Set TODOIST_TOKEN or TODOIST_TOKEN_FILE to use todos."
     });
 
-    expect(root.textContent).toContain("connect Vikunja to sync todos");
-    expect(root.textContent).toContain("VIKUNJA_URL");
+    expect(root.textContent).toContain("connect Todoist to sync todos");
+    expect(root.textContent).toContain("TODOIST_TOKEN");
     expect(root.textContent).not.toContain("nothing due - hermes will add work here");
   });
 
@@ -123,7 +123,7 @@ function todo(title: string, status: "open" | "done" | "dropped", extra = {}) {
   return {
     id: title,
     external_id: title,
-    provider: "vikunja",
+    provider: "todoist",
     title,
     notes: null,
     due_at: null,

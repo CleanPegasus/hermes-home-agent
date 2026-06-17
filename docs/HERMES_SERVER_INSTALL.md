@@ -4,7 +4,7 @@ This document is written for the Hermes agent or operator installing Hermes Home
 
 ## Goal
 
-Install Hermes Home beside the existing Hermes agent so a phone/PWA can send commands to the app server, Hermes can use the `hermes-home-mcp` tools, todos are managed in Vikunja, simple todo/note writes finish as job summaries, and immediate agent-job reports can end as generated HTML pages instead of chat replies.
+Install Hermes Home beside the existing Hermes agent so a phone/PWA can send commands to the app server, Hermes can use the `hermes-home-mcp` tools, todos are managed in Todoist (cloud API), simple todo/note writes finish as job summaries, and immediate agent-job reports can end as generated HTML pages instead of chat replies.
 
 The required v1 smoke test is:
 
@@ -18,7 +18,7 @@ The required v1 smoke test is:
 ## Assumptions
 
 - Server already has Hermes installed and able to run a named or dedicated `home` profile.
-- Server can run the local Vikunja service in the production Compose stack, or has an external Vikunja instance and an API token with task read/write access.
+- A Todoist account with an API token that has task read/write access. Todoist is a cloud SaaS; there is no self-hosted task container to run.
 - Server has Docker Compose.
 - Server has Python 3.12+ and Node 20+ available on the host.
 - Server is reachable over a private network or tailnet. Do not expose this app publicly without adding the deployment's normal auth, TLS, and firewall controls.
@@ -70,9 +70,8 @@ HERMES_ENV=production
 CORS_ORIGINS=http://127.0.0.1:5173,http://localhost:5173,https://<tailnet-hostname>
 PUBLIC_BASE_URL=https://<tailnet-hostname>
 VITE_API_BASE=
-VIKUNJA_URL=https://<vikunja-host>
-VIKUNJA_TOKEN=<api-token>
-VIKUNJA_DEFAULT_PROJECT_ID=<project-id>
+TODOIST_TOKEN=<api-token>
+TODOIST_DEFAULT_PROJECT_ID=<project-id>
 OBSIDIAN_VAULT_PATH=/opt/hermes-home/obsidian-vault
 SERVER_PORT=8000
 POSTGRES_PORT=5432
@@ -80,7 +79,7 @@ CODEX_ENABLED=false
 HERMES_STRICT_DEPLOYMENT_CHECKS=true
 ```
 
-Create the Vikunja API token in Vikunja under Settings > API Tokens. Give it task read/write access for the project Hermes should use for natural-language todo capture. Do not commit the token; keep it only in the deployed `.env`.
+Todos use the Todoist cloud API; there is no self-hosted task container. Create a Todoist API token under Settings > Integrations > Developer and set `TODOIST_TOKEN` (or point `TODOIST_TOKEN_FILE` at a file containing it). Optionally set `TODOIST_DEFAULT_PROJECT_ID` to the project Hermes should use for natural-language todo capture; leave it blank to fall back to the Todoist Inbox. Do not commit the token; keep it only in the deployed `.env`.
 
 Set `OBSIDIAN_VAULT_PATH` to the vault folder that the server can read and write. Hermes Home stores notes as markdown files with YAML frontmatter in that folder; sync the folder externally with Obsidian Sync, Syncthing, iCloud, or your existing vault sync path.
 
@@ -128,34 +127,31 @@ path = Path("deploy/.env.production")
 text = path.read_text()
 text = text.replace("HOME_API_TOKEN=change-me", f"HOME_API_TOKEN={secrets.token_urlsafe(32)}")
 text = text.replace("POSTGRES_PASSWORD=change-me", f"POSTGRES_PASSWORD={secrets.token_urlsafe(32)}")
-text = text.replace("VIKUNJA_POSTGRES_PASSWORD=change-me", f"VIKUNJA_POSTGRES_PASSWORD={secrets.token_urlsafe(32)}")
-text = text.replace("VIKUNJA_SERVICE_SECRET=change-me", f"VIKUNJA_SERVICE_SECRET={secrets.token_urlsafe(32)}")
 path.write_text(text)
 PY
 ```
 
-Set `PUBLIC_BASE_URL` and `CORS_ORIGINS` to the HTTP origin users will open, for example `http://<vps-ip>` or `http://home.example.com`. Keep `VITE_API_BASE=` empty; nginx makes browser API calls same-origin. The production compose file also starts a local Vikunja service and its own Postgres database. Vikunja stays internal to the Compose network at `http://vikunja:3456`; nginx does not expose the Vikunja UI or API. Set `OBSIDIAN_VAULT_HOST_PATH` to the host folder that should be mounted at `/data/obsidian-vault` inside the app container. If `AGENT_CMD` is set, it must point to a command available inside the app container; leave it empty for fallback-mode smoke tests.
+Set `PUBLIC_BASE_URL` and `CORS_ORIGINS` to the HTTP origin users will open, for example `http://<vps-ip>` or `http://home.example.com`. Keep `VITE_API_BASE=` empty; nginx makes browser API calls same-origin. Todos use the Todoist cloud API; there is no self-hosted task container in this stack. Set `TODOIST_TOKEN` (and optionally `TODOIST_DEFAULT_PROJECT_ID`) in `deploy/.env.production`. Set `OBSIDIAN_VAULT_HOST_PATH` to the host folder that should be mounted at `/data/obsidian-vault` inside the app container. If `AGENT_CMD` is set, it must point to a command available inside the app container; leave it empty for fallback-mode smoke tests.
 
-Create the nginx Basic Auth password file and the host-side Vikunja token file path. Nginx validates this browser-facing username/password and injects the app bearer token upstream, so browser users do not need to know `HOME_API_TOKEN`.
+Create the nginx Basic Auth password file. Nginx validates this browser-facing username/password and injects the app bearer token upstream, so browser users do not need to know `HOME_API_TOKEN`.
 
 ```bash
-mkdir -p deploy/nginx deploy/data/obsidian-vault deploy/vikunja
+mkdir -p deploy/nginx deploy/data/obsidian-vault
 read -rp "Nginx username: " NGINX_USER
 read -rsp "Nginx password: " NGINX_PASSWORD
 printf '\n'
 printf '%s:%s\n' "$NGINX_USER" "$(openssl passwd -apr1 "$NGINX_PASSWORD")" > deploy/nginx/.htpasswd
 unset NGINX_PASSWORD
-touch deploy/vikunja/api-token
 ```
 
-After the first Vikunja user and API token are created, put that token in `deploy/vikunja/api-token` and set `VIKUNJA_DEFAULT_PROJECT_ID` to the project Hermes Home should use for captured todos. Until then, the stack starts, but todo actions report that Vikunja is not fully configured.
+Set `TODOIST_TOKEN` to the Todoist API token and `TODOIST_DEFAULT_PROJECT_ID` to the project Hermes Home should use for captured todos. Without a valid token, the stack still starts, but todo actions report that Todoist is not fully configured.
 
 Start the whole stack:
 
 ```bash
 docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml up -d --build
 docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml ps
-docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml logs --tail=100 app webapp nginx vikunja
+docker compose --env-file deploy/.env.production -f deploy/compose.prod.yml logs --tail=100 app webapp nginx
 ```
 
 Restart after code or env changes:
@@ -409,8 +405,8 @@ Expected:
 - One job reaches `done`.
 - Todo-only jobs finish with no `page_id` and a concise job summary.
 - `job_events` includes short step logs.
-- One Vikunja-backed todo is open and includes `provider: "vikunja"` plus an `external_id`.
-- The todos tile count is `1` from the refreshed Vikunja cache.
+- One Todoist-backed todo is open and includes `provider: "todoist"` plus an `external_id`.
+- The todos tile count is `1` from the refreshed Todoist cache.
 
 ## Failure Modes
 
@@ -421,11 +417,11 @@ If an agent-job report fails with `agent exited without publishing a page`:
 - Confirm the `hermes-home` MCP server is registered in the `home` profile.
 - Confirm the MCP server receives the same `DATABASE_URL` as the app server.
 
-If todo routes or commands return a Vikunja configuration error:
+If todo routes or commands return a Todoist configuration error:
 
-- Confirm `VIKUNJA_URL` points to the Vikunja instance root or `/api/v1`.
-- Confirm `VIKUNJA_TOKEN` is set and has task read/write permissions.
-- Confirm `VIKUNJA_DEFAULT_PROJECT_ID` or `VIKUNJA_PROJECT_ID` is set for todo creation.
+- Confirm `TODOIST_TOKEN` is set (or `TODOIST_TOKEN_FILE` points at a readable file) and has task read/write permissions.
+- Confirm `TODOIST_DEFAULT_PROJECT_ID` is a valid project id, or leave it blank to use the Todoist Inbox.
+- Confirm the app container can reach the Todoist cloud API over HTTPS.
 
 If the app server cannot connect to Postgres:
 

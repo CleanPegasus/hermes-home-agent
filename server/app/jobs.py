@@ -12,10 +12,10 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
-from .models import AgentProfile, Approval, CalendarEvent, Job, JobEvent, Page, Tile, utcnow
+from .models import AgentProfile, Approval, CalendarEvent, Clarification, Job, JobEvent, Page, SavedItem, Tile, utcnow
 from .todo_provider import cached_done_todos, cached_open_todos, complete_todo, create_todo, drop_todo, reopen_todo
+from .todoist import TodoistError, todoist_status
 from .vault import VaultStore
-from .vikunja import VikunjaError, vikunja_status
 
 
 ACTION_REGISTRY = {
@@ -223,20 +223,20 @@ def invoke_fallback_agent(session: Session, job: Job) -> None:
     job.started_at = utcnow()
     refresh_jobs_tile(session)
     log_event(session, job.id, "reading command")
-    log_event(session, job.id, "matching Vikunja todo capture")
+    log_event(session, job.id, "matching Todoist todo capture")
 
     parsed = parse_todo_command(job.command)
     try:
         todo = create_todo(session, title=parsed.title, due_at=parsed.due_at, source="agent")
         refresh_todos_tile(session)
-    except VikunjaError as exc:
+    except TodoistError as exc:
         job.status = "failed"
         job.error = str(exc)
         job.finished_at = utcnow()
         log_event(session, job.id, str(exc), "warn")
         refresh_jobs_tile(session)
         return
-    log_event(session, job.id, f"created Vikunja todo · {parsed.title}")
+    log_event(session, job.id, f"created Todoist todo · {parsed.title}")
     job.emoji = "✅"
     job.summary = f"added '{parsed.title}' to todos"[:140]
     job.status = "done"
@@ -327,7 +327,7 @@ def handle_action(session: Session, action: str, payload: dict) -> dict:
         todo_id = str(payload.get("todo_id", ""))
         try:
             todo = complete_todo(session, todo_id)
-        except (ValueError, VikunjaError) as exc:
+        except (ValueError, TodoistError) as exc:
             return {"ok": False, "error": str(exc)}
         refresh_todos_tile(session)
         return {
@@ -342,7 +342,7 @@ def handle_action(session: Session, action: str, payload: dict) -> dict:
         todo_id = str(payload.get("todo_id", ""))
         try:
             todo = reopen_todo(session, todo_id)
-        except (ValueError, VikunjaError) as exc:
+        except (ValueError, TodoistError) as exc:
             return {"ok": False, "error": str(exc)}
         refresh_todos_tile(session)
         return {
@@ -357,7 +357,7 @@ def handle_action(session: Session, action: str, payload: dict) -> dict:
         todo_id = str(payload.get("todo_id", ""))
         try:
             result = drop_todo(session, todo_id)
-        except (ValueError, VikunjaError) as exc:
+        except (ValueError, TodoistError) as exc:
             return {"ok": False, "error": str(exc)}
         refresh_todos_tile(session)
         return result
@@ -551,12 +551,12 @@ def recover_interrupted_jobs(session: Session) -> int:
 
 
 def refresh_todos_tile(session: Session) -> None:
-    if not vikunja_status()["configured"]:
+    if not todoist_status()["configured"]:
         update_tile(
             session,
             "todos",
-            front={"count": 0, "emoji": "✅", "line": "setup", "sub": "connect Vikunja"},
-            back={"line": "not configured", "sub": "set url and token", "glyph": "check"},
+            front={"count": 0, "emoji": "✅", "line": "setup", "sub": "connect Todoist"},
+            back={"line": "not configured", "sub": "set TODOIST_TOKEN", "glyph": "check"},
         )
         return
     try:
@@ -623,6 +623,49 @@ def refresh_notes_tile(session: Session) -> None:
         "notes",
         front={"count": len(notes), "emoji": "📝", "line": "filed", "sub": latest["title"] if latest else "nothing yet"},
         back={"line": "categories", "sub": "inbox home errands", "glyph": "note"},
+    )
+
+
+def refresh_ask_tile(session: Session) -> None:
+    session.flush()
+    pending = session.scalars(
+        select(Clarification).where(Clarification.status == "pending").order_by(Clarification.created_at.desc())
+    ).all()
+    first = pending[0] if pending else None
+    update_tile(
+        session,
+        "ask",
+        front={
+            "count": len(pending),
+            "emoji": "❓",
+            "line": "ask",
+            "sub": (first.question[:48] if first else "no open questions"),
+        },
+        back={"line": "waiting on you", "sub": "tap to answer" if pending else "all clear", "glyph": "?"},
+    )
+
+
+def refresh_for_you_tile(session: Session) -> None:
+    session.flush()
+    items = session.scalars(
+        select(SavedItem)
+        .where(SavedItem.status.in_(["enriched", "surfaced"]))
+        .order_by(SavedItem.score.desc().nullslast(), SavedItem.created_at.desc())
+    ).all()
+    inbox = session.scalar(
+        select(func.count()).select_from(SavedItem).where(SavedItem.status == "new")
+    ) or 0
+    top = items[0] if items else None
+    update_tile(
+        session,
+        "foryou",
+        front={
+            "count": len(items),
+            "emoji": "✨",
+            "line": "for you",
+            "sub": (top.title[:48] if top else ("enriching…" if inbox else "share to save")),
+        },
+        back={"line": "saved", "sub": f"{int(inbox)} in queue" if inbox else "all caught up", "glyph": ">"},
     )
 
 

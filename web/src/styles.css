@@ -1632,3 +1632,104 @@ html.tiles-paused .tile-inner {
     transform: none !important;
   }
 }
+
+/* Ask + For You surfaces */
+.ask-card,
+.foryou-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+  margin-bottom: 12px;
+  background: var(--surface, #16161a);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+}
+
+.ask-meta,
+.foryou-meta {
+  margin: 0;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.6;
+}
+
+.ask-question {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.3;
+}
+
+.foryou-title {
+  margin: 0;
+  font-size: 17px;
+  color: inherit;
+}
+
+a.foryou-title {
+  text-decoration: none;
+}
+
+a.foryou-title:hover {
+  text-decoration: underline;
+}
+
+.foryou-summary {
+  margin: 0;
+  opacity: 0.8;
+  line-height: 1.45;
+}
+
+.ask-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ask-choice {
+  cursor: pointer;
+}
+
+.ask-form {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.ask-input {
+  flex: 1;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(0, 0, 0, 0.25);
+  color: inherit;
+}
+
+.ask-send {
+  padding: 10px 16px;
+  border-radius: 8px;
+  border: none;
+  background: var(--accent, #0050ef);
+  color: #fff;
+  cursor: pointer;
+}
+
+.ask-card.is-submitting {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.link-button {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent, #4ea1ff);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.link-button:hover {
+  text-decoration: underline;
+}

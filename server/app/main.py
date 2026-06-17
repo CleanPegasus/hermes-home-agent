@@ -26,11 +26,15 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from .connectors import connector_history, connector_status, sync_all
 from .db import init_db, make_engine, make_session_factory
-from .jobs import ACTION_REGISTRY, cancel_job, create_job, derive_history_meta, handle_action, invoke_agent, recover_interrupted_jobs, refresh_notes_tile, refresh_todos_tile, tail_text
+from .embeddings import embedding_status
+from .indexer import reindex_all, semantic_search
+from .jobs import ACTION_REGISTRY, cancel_job, create_job, derive_history_meta, handle_action, invoke_agent, recover_interrupted_jobs, refresh_ask_tile, refresh_for_you_tile, refresh_notes_tile, refresh_todos_tile, tail_text
+from .saved_items import enrich_pending_saved_items, refresh_for_you_job, start_saved_item_enrichment
+from .scheduler import HermesScheduler
 from .todo_provider import list_todos
+from .todoist import TodoistConfigurationError, TodoistError, todoist_status
 from .vault import VaultConfigurationError, VaultError, VaultNoteNotFoundError, VaultStore
-from .vikunja import VikunjaConfigurationError, VikunjaError, vikunja_status
-from .models import ActionRun, AgentProfile, Approval, CalendarEvent, Category, ChannelMessage, Clarification, CodexRun, ConnectorSyncRun, Job, JobEvent, Note, Page, SpendItem, Tile, Todo, utcnow
+from .models import ActionRun, AgentProfile, Approval, CalendarEvent, Category, ChannelMessage, Clarification, CodexRun, ConnectorSyncRun, Job, JobEvent, Note, Page, SavedItem, SpendItem, Tile, Todo, utcnow
 
 CODEX_EFFORT_LEVELS = ("low", "medium", "high", "xhigh")
 CodexEffort = Literal["low", "medium", "high", "xhigh"]
@@ -86,6 +90,18 @@ class ProfilePatch(BaseModel):
     color: str | None = Field(default=None, min_length=1, max_length=40)
     persona: str | None = Field(default=None, max_length=12000)
     is_default: bool | None = None
+
+
+class SavedItemIn(BaseModel):
+    url: str | None = Field(default=None, max_length=4000)
+    title: str | None = Field(default=None, max_length=600)
+    text: str | None = Field(default=None, max_length=20000)
+
+
+class HandoffIn(BaseModel):
+    profile_slug: str = Field(min_length=1, max_length=80)
+    command: str = Field(min_length=1, max_length=4000)
+    source_job_id: str | None = Field(default=None, max_length=80)
 
 
 def get_vault() -> VaultStore:
@@ -178,7 +194,7 @@ def create_app() -> FastAPI:
             "auth": {"valid": True},
             "approvals": {"pending": pending_approval is not None},
             "connectors": connector_status(session),
-            "todos": vikunja_status(),
+            "todos": todoist_status(),
         }
 
     @app.get("/api/capabilities")
@@ -208,15 +224,17 @@ def create_app() -> FastAPI:
                 "job_retry": True,
                 "job_cancel": True,
                 "notes_search": True,
-                "todos": vikunja_status(),
+                "todos": todoist_status(),
             },
         }
 
     @app.get("/api/tiles")
     async def tiles(_: None = Depends(require_auth), session: Session = Depends(get_session)) -> dict:
-        if not vikunja_status()["configured"]:
+        if not todoist_status()["configured"]:
             refresh_todos_tile(session)
-            session.flush()
+        refresh_ask_tile(session)
+        refresh_for_you_tile(session)
+        session.flush()
         rows = session.scalars(select(Tile).order_by(Tile.sort)).all()
         return {"tiles": [serialize_tile(tile) for tile in rows]}
 
@@ -283,27 +301,26 @@ def create_app() -> FastAPI:
 
     @app.get("/api/todos")
     async def todos(_: None = Depends(require_auth), session: Session = Depends(get_session)) -> dict:
-        status = vikunja_status()
+        status = todoist_status()
         try:
-            client = None
-            from .vikunja import VikunjaClient
+            from .todoist import TodoistClient
 
-            client = VikunjaClient.from_env()
+            client = TodoistClient.from_env()
             rows = list_todos(session, client=client)
-            projects = serialize_vikunja_projects(client.list_projects())
-            labels = serialize_vikunja_labels(client.list_labels())
-        except VikunjaConfigurationError as exc:
+            projects = serialize_todo_projects(client.list_projects())
+            labels = serialize_todo_labels(client.list_labels())
+        except TodoistConfigurationError as exc:
             refresh_todos_tile(session)
             return {
                 "todos": [],
                 "projects": [],
                 "labels": [],
                 "configured": False,
-                "provider": "vikunja",
+                "provider": "todoist",
                 "status": status,
                 "warning": str(exc),
             }
-        except VikunjaError as exc:
+        except TodoistError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         refresh_todos_tile(session)
         return {
@@ -442,7 +459,7 @@ def create_app() -> FastAPI:
             "environment": {
                 "agent_configured": bool(os.getenv("AGENT_CMD")),
                 "database": database_kind(os.getenv("DATABASE_URL", "sqlite:///./hermes-home.db")),
-                "todos": vikunja_status(),
+                "todos": todoist_status(),
             },
         }
 
@@ -524,6 +541,7 @@ def create_app() -> FastAPI:
         row.status = "answered"
         row.answered_at = utcnow()
         row.follow_up_job_id = follow_up.id
+        refresh_ask_tile(session)
         session.commit()
         start_agent_job(session_factory, follow_up.id)
         return {
@@ -784,6 +802,95 @@ def create_app() -> FastAPI:
     ) -> dict:
         return deployment_self_check_payload(request, session, app.state.startup_recovery)
 
+    @app.get("/api/search")
+    async def search(
+        q: str = Query(min_length=1, max_length=2000),
+        types: str | None = Query(default=None, max_length=200),
+        limit: int = Query(default=10, ge=1, le=50),
+        _: None = Depends(require_auth),
+        session: Session = Depends(get_session),
+    ) -> dict:
+        source_types = [t.strip() for t in types.split(",") if t.strip()] if types else None
+        results = semantic_search(session, q, source_types=source_types, limit=limit)
+        return {"query": q, "results": results, "provider": embedding_status()}
+
+    @app.get("/api/saved-items")
+    async def list_saved_items(
+        status: str | None = Query(default=None, max_length=40),
+        _: None = Depends(require_auth),
+        session: Session = Depends(get_session),
+    ) -> dict:
+        return {"saved_items": [serialize_saved_item(item) for item in query_saved_items(session, status=status)]}
+
+    @app.post("/api/saved-items")
+    async def create_saved_item(
+        payload: SavedItemIn,
+        _: None = Depends(require_auth),
+        session: Session = Depends(get_session),
+    ) -> dict:
+        if not (payload.url or payload.text):
+            raise HTTPException(status_code=422, detail="provide a url or text to save")
+        item = SavedItem(
+            url=(payload.url.strip() if payload.url else None),
+            title=(payload.title.strip() if payload.title else "") or default_saved_title(payload),
+            text=(payload.text.strip() if payload.text else None),
+            source="shortcut",
+            status="new",
+        )
+        session.add(item)
+        session.flush()
+        refresh_for_you_tile(session)
+        # Enrich in the background so the Shortcut returns immediately.
+        start_saved_item_enrichment(session_factory, item.id)
+        return {"saved_item_id": item.id}
+
+    @app.post("/api/saved-items/{saved_item_id}/archive")
+    async def archive_saved_item(
+        saved_item_id: str,
+        _: None = Depends(require_auth),
+        session: Session = Depends(get_session),
+    ) -> dict:
+        item = session.get(SavedItem, saved_item_id)
+        if not item:
+            raise HTTPException(status_code=404, detail="saved item not found")
+        item.status = "archived"
+        item.updated_at = utcnow()
+        refresh_for_you_tile(session)
+        return {"ok": True, "saved_item": serialize_saved_item(item)}
+
+    @app.post("/api/jobs/handoff")
+    async def jobs_handoff(
+        payload: HandoffIn,
+        _: None = Depends(require_auth),
+        session: Session = Depends(get_session),
+    ) -> dict:
+        profile = session.scalar(select(AgentProfile).where(AgentProfile.slug == payload.profile_slug))
+        if not profile:
+            raise HTTPException(status_code=404, detail=f"profile '{payload.profile_slug}' not found")
+        child = create_job(session, payload.command, profile_id=profile.id)
+        child.parent_job_id = payload.source_job_id
+        session.commit()
+        start_agent_job(session_factory, child.id)
+        return {"job_id": child.id, "profile_id": profile.id, "profile_slug": profile.slug}
+
+    @app.get("/api/clarifications")
+    async def list_clarifications(
+        status: str = Query(default="pending", max_length=40),
+        _: None = Depends(require_auth),
+        session: Session = Depends(get_session),
+    ) -> dict:
+        rows = session.scalars(
+            select(Clarification).where(Clarification.status == status).order_by(Clarification.created_at.desc())
+        ).all()
+        items = []
+        for row in rows:
+            job = session.get(Job, row.job_id)
+            profile = session.get(AgentProfile, job.profile_id) if job and job.profile_id else None
+            payload = serialize_clarification(row)
+            payload["job"] = serialize_job(job, profile) if job else None
+            items.append(payload)
+        return {"clarifications": items}
+
     @app.get("/api/vitals")
     async def vitals(_: None = Depends(require_auth), session: Session = Depends(get_session)) -> dict:
         status_counts = {
@@ -800,7 +907,7 @@ def create_app() -> FastAPI:
             "counts": {
                 "jobs": session.query(Job).count(),
                 "job_status_rows": status_counts,
-                "todos_open": session.query(Todo).filter(Todo.provider == "vikunja", Todo.external_id.is_not(None), Todo.status == "open").count(),
+                "todos_open": session.query(Todo).filter(Todo.provider == "todoist", Todo.external_id.is_not(None), Todo.status == "open").count(),
                 "notes": vault_note_count(),
                 "approvals_pending": session.query(Approval).filter(Approval.status == "pending").count(),
                 "calendar_events": session.query(CalendarEvent).count(),
@@ -809,6 +916,16 @@ def create_app() -> FastAPI:
                 "codex_runs": session.query(CodexRun).count(),
             },
         }
+
+    if truthy_env_default("HERMES_SCHEDULER_ENABLED", True):
+        scheduler = HermesScheduler(session_factory=session_factory)
+        reindex_hour = int(os.getenv("HERMES_REINDEX_HOUR", "3"))
+        foryou_minutes = int(os.getenv("HERMES_FORYOU_INTERVAL_MINUTES", "60"))
+        scheduler.add_daily("reindex", reindex_hour, reindex_all)
+        scheduler.add_interval("for-you", foryou_minutes * 60, refresh_for_you_job)
+        scheduler.add_interval("enrich-saved", 120, enrich_pending_saved_items)
+        app.state.scheduler = scheduler
+        scheduler.start()
 
     return app
 
@@ -955,6 +1072,13 @@ def truthy_env(name: str) -> bool:
 
 def falsy_env(name: str) -> bool:
     return os.getenv(name, "").strip().lower() in {"0", "false", "no", "off"}
+
+
+def truthy_env_default(name: str, default: bool) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
 
 
 def start_agent_job(session_factory: sessionmaker[Session], job_id: str) -> None:
@@ -1243,17 +1367,67 @@ def serialize_todo(todo: Todo) -> dict:
     }
 
 
-def serialize_vikunja_projects(projects: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def default_saved_title(payload: SavedItemIn) -> str:
+    if payload.url:
+        try:
+            host = urlparse(payload.url).netloc
+            if host:
+                return host
+        except ValueError:
+            pass
+    if payload.text:
+        snippet = " ".join(payload.text.split())[:80]
+        if snippet:
+            return snippet
+    return "saved item"
+
+
+def query_saved_items(session: Session, status: str | None = None) -> list[SavedItem]:
+    stmt = select(SavedItem)
+    if status:
+        stmt = stmt.where(SavedItem.status == status)
+    else:
+        stmt = stmt.where(SavedItem.status != "archived")
+    return list(session.scalars(stmt.order_by(SavedItem.created_at.desc())).all())
+
+
+def serialize_saved_item(item: SavedItem) -> dict:
+    return {
+        "id": item.id,
+        "url": item.url,
+        "title": item.title,
+        "text": item.text,
+        "summary": item.summary,
+        "tags": item.tags or [],
+        "status": item.status,
+        "score": item.score,
+        "source": item.source,
+        "created_at": serialize_dt(item.created_at),
+        "enriched_at": serialize_dt(item.enriched_at),
+        "surfaced_at": serialize_dt(item.surfaced_at),
+    }
+
+
+def serialize_todo_projects(projects: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    # Todoist projects/labels expose `name`; older Vikunja payloads used `title`.
     return [
-        {"id": str(project.get("id")), "title": str(project.get("title") or ""), "hex_color": str(project.get("hex_color") or "")}
+        {
+            "id": str(project.get("id")),
+            "title": str(project.get("name") or project.get("title") or ""),
+            "hex_color": str(project.get("color") or project.get("hex_color") or ""),
+        }
         for project in projects
         if project.get("id") is not None
     ]
 
 
-def serialize_vikunja_labels(labels: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def serialize_todo_labels(labels: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
-        {"id": str(label.get("id")), "title": str(label.get("title") or ""), "hex_color": str(label.get("hex_color") or "")}
+        {
+            "id": str(label.get("id")),
+            "title": str(label.get("name") or label.get("title") or ""),
+            "hex_color": str(label.get("color") or label.get("hex_color") or ""),
+        }
         for label in labels
         if label.get("id") is not None
     ]
@@ -1300,6 +1474,7 @@ def serialize_job(job: Job, profile: AgentProfile | None = None) -> dict:
         "summary": job.summary or summary,
         "profile_id": job.profile_id,
         "profile": serialize_profile_summary(profile) if profile else None,
+        "parent_job_id": job.parent_job_id,
         "started_at": serialize_dt(job.started_at),
         "finished_at": serialize_dt(job.finished_at),
     }

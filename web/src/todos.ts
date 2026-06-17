@@ -47,7 +47,7 @@ export function renderTodos(todos: Todo[], actions?: TodoActions, state: TodoSur
   if (state.configured === false) {
     const setup = document.createElement("div");
     setup.className = "todo-setup";
-    setup.append(emptyState("🔗", "connect Vikunja to sync todos. Set VIKUNJA_URL and VIKUNJA_TOKEN on the server.", state.warning || undefined));
+    setup.append(emptyState("🔗", "connect Todoist to sync todos. Set TODOIST_TOKEN on the server.", state.warning || undefined));
     list.append(setup);
     root.append(tabs, list);
     return root;

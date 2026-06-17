@@ -54,7 +54,7 @@ class Todo(Base):
 
     id: Mapped[str] = mapped_column(uuid_type(), primary_key=True, default=new_id)
     external_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
-    provider: Mapped[str] = mapped_column(String, default="vikunja")
+    provider: Mapped[str] = mapped_column(String, default="todoist")
     title: Mapped[str] = mapped_column(String)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -85,6 +85,7 @@ class Job(Base):
     emoji: Mapped[str | None] = mapped_column(Text, nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     profile_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    parent_job_id: Mapped[str | None] = mapped_column(uuid_type(), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -260,3 +261,35 @@ class CalendarSync(Base):
     calendar_id: Mapped[str] = mapped_column(String, primary_key=True)
     sync_token: Mapped[str | None] = mapped_column(String, nullable=True)
     last_polled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class IndexEntry(Base):
+    __tablename__ = "index_entries"
+
+    id: Mapped[str] = mapped_column(uuid_type(), primary_key=True, default=new_id)
+    source_type: Mapped[str] = mapped_column(String, index=True)  # note, job, todo, saved_item
+    source_id: Mapped[str] = mapped_column(String, index=True)
+    title: Mapped[str] = mapped_column(String, default="")
+    content: Mapped[str] = mapped_column(Text, default="")
+    content_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    embedding: Mapped[list[float] | None] = mapped_column(JSON, nullable=True)
+    entry_metadata: Mapped[dict] = mapped_column(JSON, default=dict)
+    indexed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class SavedItem(Base):
+    __tablename__ = "saved_items"
+
+    id: Mapped[str] = mapped_column(uuid_type(), primary_key=True, default=new_id)
+    url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    title: Mapped[str] = mapped_column(String, default="saved item")
+    text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tags: Mapped[list[str]] = mapped_column(JSON, default=list)
+    source: Mapped[str] = mapped_column(String, default="shortcut")  # shortcut, agent
+    status: Mapped[str] = mapped_column(String, default="new")  # new, enriched, surfaced, archived
+    score: Mapped[float | None] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    enriched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    surfaced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -51,7 +51,7 @@ export type TodoLabel = {
   hex_color: string;
 };
 
-export type VikunjaStatus = {
+export type TodoStatus = {
   configured: boolean;
   url: string | null;
   default_project_configured: boolean;
@@ -64,8 +64,32 @@ export type TodosResponse = {
   labels: TodoLabel[];
   configured: boolean;
   provider: string;
-  status: VikunjaStatus;
+  status: TodoStatus;
   warning: string | null;
+};
+
+export type SavedItem = {
+  id: string;
+  url: string | null;
+  title: string;
+  text: string | null;
+  summary: string | null;
+  tags: string[];
+  status: "new" | "enriched" | "surfaced" | "archived" | string;
+  score: number | null;
+  source: string;
+  created_at: string | null;
+  enriched_at: string | null;
+  surfaced_at: string | null;
+};
+
+export type SearchResult = {
+  source_type: string;
+  source_id: string;
+  title: string;
+  snippet: string;
+  score: number;
+  metadata: Record<string, unknown>;
 };
 
 export type Category = {
@@ -113,6 +137,7 @@ export type Job = {
     emoji: string;
     color: string;
   };
+  parent_job_id: string | null;
   started_at: string | null;
   finished_at: string | null;
 };
@@ -309,7 +334,7 @@ export type SessionInfo = {
     pending: boolean;
   };
   connectors: Record<string, ConnectorStatus>;
-  todos: VikunjaStatus;
+  todos: TodoStatus;
 };
 
 export type ApiClient = ReturnType<typeof createApiClient>;
@@ -471,6 +496,15 @@ export function createApiClient(options: ClientOptions = {}) {
         method: "POST",
         body: JSON.stringify({ prompt, effort, confirm_dangerous_mode: confirmDangerousMode })
       }),
+    getPendingClarifications: () =>
+      request<{ clarifications: Array<Clarification & { job: Job | null }> }>("/api/clarifications?status=pending"),
+    getSavedItems: (status?: string) => request<{ saved_items: SavedItem[] }>(`/api/saved-items${queryString({ status })}`),
+    saveItem: (item: { url?: string; title?: string; text?: string }) =>
+      request<{ saved_item_id: string }>("/api/saved-items", { method: "POST", body: JSON.stringify(item) }),
+    archiveSavedItem: (savedItemId: string) =>
+      request<{ ok: boolean; saved_item: SavedItem }>(`/api/saved-items/${savedItemId}/archive`, { method: "POST" }),
+    searchMemory: (query: string, types?: string, limit?: number) =>
+      request<{ query: string; results: SearchResult[]; provider: Record<string, unknown> }>(`/api/search${queryString({ q: query, types, limit })}`),
     getProfiles: () => request<{ profiles: Profile[]; default_id: string | null }>("/api/profiles"),
     createProfile: (profile: Pick<Profile, "name" | "emoji" | "color" | "persona"> & { is_default?: boolean }) =>
       request<{ profile: Profile }>("/api/profiles", { method: "POST", body: JSON.stringify(profile) }),

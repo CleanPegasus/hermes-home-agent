@@ -66,6 +66,8 @@ export interface PackedTile {
 const METRO_TILE_SHAPES_BY_KEY: Record<string, TileShape> = {
   jobs: "wide",
   todos: "large",
+  ask: "wide",
+  foryou: "large",
   calendar: "wide",
   notes: "large",
   approvals: "small",

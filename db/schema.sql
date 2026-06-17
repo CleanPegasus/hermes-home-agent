@@ -29,7 +29,7 @@ CREATE INDEX IF NOT EXISTS notes_created_at_idx ON notes (created_at DESC);
 CREATE TABLE IF NOT EXISTS todos (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   external_id TEXT,
-  provider TEXT NOT NULL DEFAULT 'vikunja',
+  provider TEXT NOT NULL DEFAULT 'todoist',
   title TEXT NOT NULL,
   notes TEXT,
   due_at TIMESTAMPTZ,
@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS todos (
   status TEXT NOT NULL DEFAULT 'open'
     CHECK (status IN ('open', 'done', 'dropped')),
   source TEXT NOT NULL DEFAULT 'user'
-    CHECK (source IN ('user', 'agent', 'channel', 'vikunja')),
+    CHECK (source IN ('user', 'agent', 'channel', 'vikunja', 'todoist')),
   things_id TEXT,
   project_id TEXT,
   project_title TEXT,
@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   emoji TEXT,
   summary TEXT,
   profile_id TEXT,
+  parent_job_id UUID,
   started_at TIMESTAMPTZ,
   finished_at TIMESTAMPTZ
 );
@@ -268,6 +269,40 @@ CREATE TABLE IF NOT EXISTS calendar_sync (
   last_polled_at TIMESTAMPTZ
 );
 
+CREATE TABLE IF NOT EXISTS index_entries (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  source_type TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  content TEXT NOT NULL DEFAULT '',
+  content_hash TEXT,
+  embedding JSONB,
+  entry_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  indexed_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS index_entries_source_idx ON index_entries (source_type, source_id);
+
+CREATE TABLE IF NOT EXISTS saved_items (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  url TEXT,
+  title TEXT NOT NULL DEFAULT 'saved item',
+  text TEXT,
+  summary TEXT,
+  tags JSONB NOT NULL DEFAULT '[]'::jsonb,
+  source TEXT NOT NULL DEFAULT 'shortcut'
+    CHECK (source IN ('shortcut', 'agent')),
+  status TEXT NOT NULL DEFAULT 'new'
+    CHECK (status IN ('new', 'enriched', 'surfaced', 'archived')),
+  score DOUBLE PRECISION,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  enriched_at TIMESTAMPTZ,
+  surfaced_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS saved_items_status_created_idx ON saved_items (status, created_at DESC);
+
 INSERT INTO categories (slug, name, color, created_by)
 VALUES
   ('inbox', 'inbox', '#0050EF', 'seed'),
@@ -293,6 +328,12 @@ VALUES
   ('notes', 'm', '#008A00', 40,
    '{"count":0,"emoji":"📝","line":"filed","sub":"nothing yet"}'::jsonb,
    '{"line":"categories","sub":"inbox home errands","glyph":"note"}'::jsonb),
+  ('ask', 'm', '#AA00FF', 22,
+   '{"count":0,"emoji":"❓","line":"ask","sub":"no open questions"}'::jsonb,
+   '{"line":"waiting on you","sub":"all clear","glyph":"?"}'::jsonb),
+  ('foryou', 'm', '#F0A30A', 45,
+   '{"count":0,"emoji":"✨","line":"for you","sub":"share to save"}'::jsonb,
+   '{"line":"saved","sub":"all caught up","glyph":">"}'::jsonb),
   ('approvals', 's', '#E51400', 50,
    '{"count":0,"emoji":"🛡️","line":"appr","sub":""}'::jsonb,
    '{"line":"needs","sub":"none","glyph":"!"}'::jsonb),
@@ -324,7 +365,8 @@ ON CONFLICT (key) DO UPDATE SET
 
 INSERT INTO agent_profiles (slug, name, emoji, color, persona, is_default)
 VALUES
-  ('personal-assistant', 'personal assistant', '🪄', '#1BA1E2', 'You are a calm personal assistant for home operations. Prefer concise plans, clear next actions, and safe defaults.', TRUE),
+  ('router', 'router', '🧭', '#0050EF', 'You are Hermes'' router. Read the incoming command and route it: todos to todos_create, notes to notes_create, and real work to jobs_handoff with the best profile. Never do the downstream work yourself.', TRUE),
+  ('personal-assistant', 'personal assistant', '🪄', '#1BA1E2', 'You are a calm personal assistant for home operations. Prefer concise plans, clear next actions, and safe defaults.', FALSE),
   ('research-agent', 'research agent', '🧠', '#0050EF', 'You are a careful research agent. Gather context, cite sources when available, and summarize findings plainly.', FALSE),
   ('coding-agent', 'coding agent', '💻', '#647687', 'You are a coding agent. Read the repo first, write tests for behavior changes, and keep diffs focused.', FALSE),
   ('financial-helper', 'financial helper', '💰', '#D80073', 'You are a financial helper. Be conservative, separate facts from assumptions, and flag anything that needs review.', FALSE)

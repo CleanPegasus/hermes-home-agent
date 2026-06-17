@@ -22,6 +22,8 @@ ACCENTS = {
     "codex": "#647687",
     "history": "#0050EF",
     "profiles": "#A20025",
+    "ask": "#AA00FF",
+    "foryou": "#F0A30A",
 }
 
 
@@ -66,6 +68,22 @@ SEED_TILES = [
         "sort": 40,
         "front": {"count": 0, "emoji": "📝", "line": "filed", "sub": "nothing yet"},
         "back": {"line": "categories", "sub": "inbox home errands", "glyph": "note"}
+    },
+    {
+        "key": "ask",
+        "size": "m",
+        "color": ACCENTS["ask"],
+        "sort": 22,
+        "front": {"count": 0, "emoji": "❓", "line": "ask", "sub": "no open questions"},
+        "back": {"line": "waiting on you", "sub": "all clear", "glyph": "?"}
+    },
+    {
+        "key": "foryou",
+        "size": "m",
+        "color": ACCENTS["foryou"],
+        "sort": 45,
+        "front": {"count": 0, "emoji": "✨", "line": "for you", "sub": "share to save"},
+        "back": {"line": "saved", "sub": "all caught up", "glyph": ">"}
     },
     {
         "key": "approvals",
@@ -126,14 +144,37 @@ SEED_TILES = [
 ]
 
 
+ROUTER_PERSONA = (
+    "You are Hermes' router. Read the incoming command and decide the cheapest correct action, "
+    "then stop.\n"
+    "- If it is a thing to do or remember to act on (a task, reminder, errand, 'buy', 'call', 'remind me'), "
+    "call the todos_create tool, then job_set_summary, and finish.\n"
+    "- If it is a fact, idea, or snippet to remember (a note, 'note that', 'remember that', 'write down', "
+    "'file this'), call notes_create, then job_set_summary, and finish.\n"
+    "- If it needs real work — research, coding, multi-step planning, drafting, analysis — call the "
+    "jobs_handoff tool with the best profile_slug (research-agent, coding-agent, financial-helper, or "
+    "personal-assistant) and the original command, then stop. The chosen agent takes over from there.\n"
+    "- If you are unsure which path applies, use clarifications_request to ask before acting.\n"
+    "Never do the downstream work yourself; route it. Keep summaries to one short line."
+)
+
+
 SEED_PROFILES = [
+    {
+        "slug": "router",
+        "name": "router",
+        "emoji": "🧭",
+        "color": "#0050EF",
+        "persona": ROUTER_PERSONA,
+        "is_default": True,
+    },
     {
         "slug": "personal-assistant",
         "name": "personal assistant",
         "emoji": "🪄",
         "color": "#1BA1E2",
         "persona": "You are a calm personal assistant for home operations. Prefer concise plans, clear next actions, and safe defaults.",
-        "is_default": True,
+        "is_default": False,
     },
     {
         "slug": "research-agent",
@@ -220,6 +261,8 @@ def apply_lightweight_migrations(engine: Engine) -> None:
                 connection.execute(text("ALTER TABLE jobs ADD COLUMN summary TEXT"))
             if "profile_id" not in columns:
                 connection.execute(text("ALTER TABLE jobs ADD COLUMN profile_id TEXT"))
+            if "parent_job_id" not in columns:
+                connection.execute(text("ALTER TABLE jobs ADD COLUMN parent_job_id TEXT"))
         if "clarifications" in table_names:
             columns = {column["name"] for column in inspector.get_columns("clarifications")}
             if "follow_up_job_id" not in columns:
@@ -231,7 +274,7 @@ def apply_lightweight_migrations(engine: Engine) -> None:
             if "external_id" not in columns:
                 connection.execute(text("ALTER TABLE todos ADD COLUMN external_id TEXT"))
             if "provider" not in columns:
-                connection.execute(text("ALTER TABLE todos ADD COLUMN provider TEXT NOT NULL DEFAULT 'vikunja'"))
+                connection.execute(text("ALTER TABLE todos ADD COLUMN provider TEXT NOT NULL DEFAULT 'todoist'"))
             if "project_id" not in columns:
                 connection.execute(text("ALTER TABLE todos ADD COLUMN project_id TEXT"))
             if "project_title" not in columns:
@@ -306,10 +349,23 @@ def seed_database(session: Session) -> None:
         if not tile:
             session.add(Tile(updated_at=utcnow(), **tile_data))
 
+    added_router = False
     for profile_data in SEED_PROFILES:
         exists = session.scalar(select(AgentProfile).where(AgentProfile.slug == profile_data["slug"]))
         if not exists:
             session.add(AgentProfile(**profile_data))
+            if profile_data["slug"] == "router":
+                added_router = True
+    session.flush()
+
+    # When the router profile is first introduced it becomes the single default so
+    # incoming commands are routed automatically. Existing custom defaults are
+    # respected on subsequent boots (we only reconcile when router is newly added).
+    if added_router:
+        router = session.scalar(select(AgentProfile).where(AgentProfile.slug == "router"))
+        if router:
+            for profile in session.scalars(select(AgentProfile)).all():
+                profile.is_default = profile.id == router.id
     session.commit()
 
 

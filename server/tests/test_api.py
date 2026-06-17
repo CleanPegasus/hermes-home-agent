@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 import pytest
+from typing import Any
 
 
 @pytest.fixture
@@ -22,27 +23,29 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
-class FakeVikunja:
-    token = "test-vikunja-token"
+class FakeTodoist:
+    """Simulates the Todoist REST v2 API plus the Sync completed endpoint."""
+
+    token = "test-todoist-token"
     default_project_id = "7"
 
     def __init__(self) -> None:
         self.tasks: dict[str, dict] = {}
+        self.completed: dict[str, dict] = {}
+        # Todoist v2 projects/labels expose their display name under `name`. The
+        # serializer also accepts the legacy `title` alias, so we mirror both to
+        # keep the public /api/todos contract stable across the migration.
         self.labels: dict[str, dict] = {
-            "3": {"id": 3, "title": "groceries", "hex_color": "#4CAF50"},
-            "4": {"id": 4, "title": "urgent", "hex_color": "#E51400"},
+            "3": {"id": 3, "name": "groceries", "title": "groceries"},
+            "4": {"id": 4, "name": "urgent", "title": "urgent"},
         }
         self.projects: list[dict] = [
-            {"id": 7, "title": "home", "hex_color": "#1BA1E2"},
-            {"id": 8, "title": "errands", "hex_color": "#4CAF50"},
+            {"id": "7", "name": "home", "title": "home"},
+            {"id": "8", "name": "errands", "title": "errands"},
         ]
         self.calls: list[dict] = []
         self._next_id = 1
         self._next_label_id = 10
-
-    @property
-    def url(self) -> str:
-        return "http://fake-vikunja.test"
 
     def start(self) -> None:
         return
@@ -50,47 +53,84 @@ class FakeVikunja:
     def stop(self) -> None:
         return
 
-    def request(self, method: str, url: str, headers: dict[str, str], body: dict | None = None) -> httpx.Response:
+    def request(
+        self,
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        body: dict | None = None,
+        params: dict | None = None,
+    ) -> httpx.Response:
         parsed = urlparse(url)
         payload = body or {}
-        self.calls.append({"method": method, "path": parsed.path, "query": parse_qs(parsed.query), "body": payload})
+        self.calls.append(
+            {
+                "method": method,
+                "path": parsed.path,
+                "query": parse_qs(parsed.query),
+                "params": params or {},
+                "body": payload,
+            }
+        )
         if headers.get("authorization") != f"Bearer {self.token}":
-            return httpx.Response(401, json={"message": "missing, malformed, expired or otherwise invalid token provided"})
-        parts = parsed.path.strip("/").split("/")
-        if parts == ["api", "v1", "projects"] and method == "GET":
-            return httpx.Response(200, json=self.projects)
-        if parts == ["api", "v1", "labels"] and method == "GET":
-            return httpx.Response(200, json=list(self.labels.values()))
-        if parts == ["api", "v1", "labels"] and method == "PUT":
-            label_id = str(self._next_label_id)
-            self._next_label_id += 1
-            label = {"id": int(label_id), "title": payload["title"], "hex_color": payload.get("hex_color", "")}
-            self.labels[label_id] = label
-            return httpx.Response(201, json=label)
-        if parts == ["api", "v1", "tasks"] and method == "GET":
-            return httpx.Response(200, json=list(self.tasks.values()))
-        if len(parts) == 5 and parts[:3] == ["api", "v1", "tasks"] and parts[4] == "labels" and method == "PUT":
-            task = self.tasks.get(parts[3])
-            if not task:
-                return httpx.Response(404, json={"message": "task not found"})
-            label_id = str(payload.get("label_id") or payload.get("id"))
-            label = self.labels.get(label_id)
-            if label and label not in task["labels"]:
-                task["labels"].append(label)
-            return httpx.Response(200, json=task)
-        if len(parts) == 5 and parts[:3] == ["api", "v1", "projects"] and parts[4] == "tasks" and method == "PUT":
-            return httpx.Response(201, json=self.create_task(parts[3], payload))
-        if len(parts) == 4 and parts[:3] == ["api", "v1", "tasks"]:
-            task_id = parts[3]
+            return httpx.Response(401, json={"error": "invalid token"})
+
+        path = parsed.path
+        # Sync API completed endpoint.
+        if path == "/sync/v9/completed/get_all" and method == "GET":
+            return httpx.Response(200, json={"items": list(self.completed.values())})
+
+        if path == "/rest/v2/tasks":
             if method == "GET":
-                task = self.tasks.get(task_id)
-                return httpx.Response(200, json=task) if task else httpx.Response(404, json={"message": "task not found"})
+                active = [task for task in self.tasks.values() if not task["is_completed"]]
+                return httpx.Response(200, json=active)
             if method == "POST":
-                return httpx.Response(200, json=self.update_task(task_id, payload))
-            if method == "DELETE":
-                self.tasks.pop(task_id, None)
-                return httpx.Response(200, json={"message": "deleted"})
-        return httpx.Response(404, json={"message": "not found"})
+                return httpx.Response(200, json=self.create_task_from_body(payload))
+        if path == "/rest/v2/projects" and method == "GET":
+            return httpx.Response(200, json=self.projects)
+        if path == "/rest/v2/labels":
+            if method == "GET":
+                return httpx.Response(200, json=list(self.labels.values()))
+            if method == "POST":
+                label_id = str(self._next_label_id)
+                self._next_label_id += 1
+                label = {"id": int(label_id), "name": payload["name"], "title": payload["name"]}
+                self.labels[label_id] = label
+                return httpx.Response(200, json=label)
+
+        parts = path.strip("/").split("/")
+        # /rest/v2/tasks/{id}, /rest/v2/tasks/{id}/close, /rest/v2/tasks/{id}/reopen
+        if len(parts) >= 4 and parts[:3] == ["rest", "v2", "tasks"]:
+            task_id = parts[3]
+            action = parts[4] if len(parts) >= 5 else None
+            if action == "close" and method == "POST":
+                task = self.tasks.get(task_id)
+                if task:
+                    task["is_completed"] = True
+                    self.completed[task_id] = {
+                        "task_id": task_id,
+                        "content": task["content"],
+                        "project_id": task["project_id"],
+                        "completed_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                return httpx.Response(204)
+            if action == "reopen" and method == "POST":
+                task = self.tasks.get(task_id)
+                if task:
+                    task["is_completed"] = False
+                    self.completed.pop(task_id, None)
+                return httpx.Response(204)
+            if action is None:
+                if method == "GET":
+                    task = self.tasks.get(task_id)
+                    return httpx.Response(200, json=task) if task else httpx.Response(404, json={"error": "not found"})
+                if method == "POST":
+                    return httpx.Response(200, json=self.update_task(task_id, payload))
+                if method == "DELETE":
+                    self.tasks.pop(task_id, None)
+                    self.completed.pop(task_id, None)
+                    return httpx.Response(204)
+        return httpx.Response(404, json={"error": "not found"})
 
     def httpx_client(self):
         fake = self
@@ -113,61 +153,86 @@ class FakeVikunja:
                 json: dict[str, Any] | None = None,
                 params: dict[str, Any] | None = None,
             ) -> httpx.Response:
-                return fake.request(method, url, headers, json)
+                return fake.request(method, url, headers, json, params)
 
         return FakeClient
+
+    def _due_from_body(self, body: dict) -> dict | None:
+        if body.get("due_datetime"):
+            return {"datetime": body["due_datetime"]}
+        if body.get("due_date"):
+            return {"date": body["due_date"]}
+        if body.get("due_string"):
+            return {"string": body["due_string"]}
+        return None
+
+    def create_task_from_body(self, body: dict) -> dict:
+        return self.create_task(
+            body.get("project_id") or self.default_project_id,
+            body,
+        )
 
     def create_task(self, project_id: str, body: dict) -> dict:
         task_id = str(self._next_id)
         self._next_id += 1
         now = datetime.now(timezone.utc).isoformat()
+        labels = body.get("labels") or []
+        # Labels arrive as plain name strings in v2; accept dicts for test helpers.
+        label_names = [label["name"] if isinstance(label, dict) else str(label) for label in labels]
         task = {
-            "id": int(task_id),
-            "project_id": int(project_id),
-            "title": body.get("title", "untitled task"),
+            "id": task_id,
+            "project_id": str(project_id),
+            "content": body.get("content") or body.get("title") or "untitled task",
             "description": body.get("description", ""),
-            "done": bool(body.get("done", False)),
-            "done_at": body.get("done_at"),
-            "due_date": body.get("due_date"),
-            "start_date": body.get("start_date"),
-            "labels": body.get("labels", []),
+            "is_completed": bool(body.get("is_completed", False)),
+            "due": self._due_from_body(body),
+            "labels": label_names,
             "priority": body.get("priority"),
-            "created": now,
-            "updated": now,
+            "created_at": now,
         }
         self.tasks[task_id] = task
         return task
 
     def update_task(self, task_id: str, body: dict) -> dict:
         if task_id not in self.tasks:
-            return {"message": "task not found"}
-        now = datetime.now(timezone.utc).isoformat()
-        task = {**self.tasks[task_id], **body, "id": int(task_id), "updated": now}
-        if task.get("done") and not task.get("done_at"):
-            task["done_at"] = now
-        if not task.get("done"):
-            task["done_at"] = None
+            return {"error": "not found"}
+        task = dict(self.tasks[task_id])
+        if "content" in body:
+            task["content"] = body["content"]
+        if "description" in body:
+            task["description"] = body["description"]
+        if "priority" in body:
+            task["priority"] = body["priority"]
+        if "project_id" in body:
+            task["project_id"] = str(body["project_id"])
+        if "labels" in body:
+            labels = body["labels"] or []
+            task["labels"] = [label["name"] if isinstance(label, dict) else str(label) for label in labels]
+        due = self._due_from_body(body)
+        if due is not None or any(key in body for key in ("due_datetime", "due_date", "due_string")):
+            task["due"] = due
         self.tasks[task_id] = task
         return task
 
 
 @pytest.fixture
-def fake_vikunja(monkeypatch: pytest.MonkeyPatch) -> FakeVikunja:
-    server = FakeVikunja()
+def fake_todoist(monkeypatch: pytest.MonkeyPatch) -> FakeTodoist:
+    server = FakeTodoist()
     server.start()
-    import app.vikunja as vikunja
+    import app.todoist as todoist
 
-    monkeypatch.setattr(vikunja.httpx, "Client", server.httpx_client())
+    monkeypatch.setattr(todoist.httpx, "Client", server.httpx_client())
     try:
         yield server
     finally:
         server.stop()
 
 
-def build_app(tmp_path: Path, agent_cmd: str | None = None, vikunja: FakeVikunja | None = None):
+def build_app(tmp_path: Path, agent_cmd: str | None = None, todoist: FakeTodoist | None = None):
     os.environ["DATABASE_URL"] = f"sqlite:///{tmp_path / 'hermes-home-test.db'}"
     os.environ["HOME_API_TOKEN"] = "test-token"
     os.environ["HERMES_ENV"] = "test"
+    os.environ["HERMES_SCHEDULER_ENABLED"] = "false"
     os.environ.pop("CODEX_ENABLED", None)
     os.environ.pop("PUBLIC_BASE_URL", None)
     os.environ.pop("SERVER_HOST", None)
@@ -176,17 +241,15 @@ def build_app(tmp_path: Path, agent_cmd: str | None = None, vikunja: FakeVikunja
         os.environ["AGENT_CMD"] = agent_cmd
     else:
         os.environ.pop("AGENT_CMD", None)
-    if vikunja:
-        os.environ.pop("VIKUNJA_TOKEN_FILE", None)
-        os.environ["VIKUNJA_URL"] = vikunja.url
-        os.environ["VIKUNJA_TOKEN"] = vikunja.token
-        os.environ["VIKUNJA_DEFAULT_PROJECT_ID"] = vikunja.default_project_id
+    if todoist:
+        os.environ.pop("TODOIST_TOKEN_FILE", None)
+        os.environ["TODOIST_TOKEN"] = todoist.token
+        os.environ["TODOIST_DEFAULT_PROJECT_ID"] = todoist.default_project_id
     else:
-        os.environ.pop("VIKUNJA_URL", None)
-        os.environ.pop("VIKUNJA_TOKEN", None)
-        os.environ.pop("VIKUNJA_TOKEN_FILE", None)
-        os.environ.pop("VIKUNJA_DEFAULT_PROJECT_ID", None)
-        os.environ.pop("VIKUNJA_PROJECT_ID", None)
+        os.environ.pop("TODOIST_TOKEN", None)
+        os.environ.pop("TODOIST_TOKEN_FILE", None)
+        os.environ.pop("TODOIST_DEFAULT_PROJECT_ID", None)
+        os.environ.pop("TODOIST_TIMEOUT_SECONDS", None)
     os.environ.pop("HERMES_CALENDAR_EVENTS_JSON", None)
     os.environ.pop("HERMES_CHANNEL_MESSAGES_JSON", None)
     os.environ.pop("HERMES_SPEND_ITEMS_JSON", None)
@@ -197,8 +260,8 @@ def build_app(tmp_path: Path, agent_cmd: str | None = None, vikunja: FakeVikunja
     return main.create_app()
 
 
-def build_client(tmp_path: Path, agent_cmd: str | None = None, vikunja: FakeVikunja | None = None) -> httpx.AsyncClient:
-    transport = httpx.ASGITransport(app=build_app(tmp_path, agent_cmd=agent_cmd, vikunja=vikunja))
+def build_client(tmp_path: Path, agent_cmd: str | None = None, todoist: FakeTodoist | None = None) -> httpx.AsyncClient:
+    transport = httpx.ASGITransport(app=build_app(tmp_path, agent_cmd=agent_cmd, todoist=todoist))
     return httpx.AsyncClient(transport=transport, base_url="http://test")
 
 
@@ -206,7 +269,7 @@ def auth_headers() -> dict[str, str]:
     return {"Authorization": "Bearer test-token"}
 
 
-def test_run_home_agent_syncs_vikunja_env_to_mcp_profile(tmp_path: Path) -> None:
+def test_run_home_agent_syncs_todoist_env_to_mcp_profile(tmp_path: Path) -> None:
     yaml = pytest.importorskip("yaml")
     env_file = tmp_path / ".env"
     profile_config = tmp_path / "profile" / "config.yaml"
@@ -216,10 +279,9 @@ def test_run_home_agent_syncs_vikunja_env_to_mcp_profile(tmp_path: Path) -> None
                 "HOME_API_TOKEN=test-token",
                 f"DATABASE_URL=sqlite:///{tmp_path / 'home.db'}",
                 "HERMES_HOME_JOB_ID=",
-                "VIKUNJA_URL=http://127.0.0.1:3456",
-                "VIKUNJA_TOKEN=test-vikunja-token",
-                "VIKUNJA_DEFAULT_PROJECT_ID=2",
-                "VIKUNJA_TIMEOUT_SECONDS=3",
+                "TODOIST_TOKEN=test-todoist-token",
+                "TODOIST_DEFAULT_PROJECT_ID=2",
+                "TODOIST_TIMEOUT_SECONDS=3",
             ]
         )
         + "\n"
@@ -231,7 +293,7 @@ def test_run_home_agent_syncs_vikunja_env_to_mcp_profile(tmp_path: Path) -> None
                 "mcp_servers:",
                 "  hermes-home:",
                 "    env:",
-                "      VIKUNJA_TOKEN_FILE: /stale/token",
+                "      TODOIST_TOKEN_FILE: /stale/token",
             ]
         )
         + "\n"
@@ -263,11 +325,10 @@ def test_run_home_agent_syncs_vikunja_env_to_mcp_profile(tmp_path: Path) -> None
     assert mcp_env["HOME_API_TOKEN"] == "test-token"
     assert mcp_env["HERMES_HOME_JOB_ID"] == "job-123"
     assert mcp_env["HERMES_HOME_COMMAND"] == "add replace filter to my todos"
-    assert mcp_env["VIKUNJA_URL"] == "http://127.0.0.1:3456"
-    assert mcp_env["VIKUNJA_TOKEN"] == "test-vikunja-token"
-    assert mcp_env["VIKUNJA_DEFAULT_PROJECT_ID"] == "2"
-    assert mcp_env["VIKUNJA_TIMEOUT_SECONDS"] == "3"
-    assert "VIKUNJA_TOKEN_FILE" not in mcp_env
+    assert mcp_env["TODOIST_TOKEN"] == "test-todoist-token"
+    assert mcp_env["TODOIST_DEFAULT_PROJECT_ID"] == "2"
+    assert mcp_env["TODOIST_TIMEOUT_SECONDS"] == "3"
+    assert "TODOIST_TOKEN_FILE" not in mcp_env
 
 
 def test_run_home_agent_preserves_active_app_env_over_env_file(tmp_path: Path) -> None:
@@ -316,33 +377,33 @@ def test_run_home_agent_preserves_active_app_env_over_env_file(tmp_path: Path) -
     assert mcp_env["HERMES_HOME_COMMAND"] == "add active env to my todos"
 
 
-def test_vikunja_config_accepts_token_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    token_file = tmp_path / "vikunja.token"
+def test_todoist_config_accepts_token_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    token_file = tmp_path / "todoist.token"
     token_file.write_text("file-token\n")
-    monkeypatch.setenv("VIKUNJA_URL", "http://127.0.0.1:3456")
-    monkeypatch.delenv("VIKUNJA_TOKEN", raising=False)
-    monkeypatch.setenv("VIKUNJA_TOKEN_FILE", str(token_file))
-    monkeypatch.setenv("VIKUNJA_DEFAULT_PROJECT_ID", "2")
+    monkeypatch.delenv("TODOIST_TOKEN", raising=False)
+    monkeypatch.setenv("TODOIST_TOKEN_FILE", str(token_file))
+    monkeypatch.setenv("TODOIST_DEFAULT_PROJECT_ID", "2")
 
-    from app.vikunja import VikunjaConfig, vikunja_status
+    from app.todoist import TodoistConfig, todoist_status
 
-    config = VikunjaConfig.from_env()
-    status = vikunja_status()
+    config = TodoistConfig.from_env()
+    status = todoist_status()
 
     assert config.token == "file-token"
     assert config.default_project_id == "2"
     assert status["configured"] is True
     assert status["token_file_configured"] is True
+    assert status["provider"] == "todoist"
 
 
-def test_mcp_vikunja_normalize_accepts_null_labels() -> None:
+def test_mcp_todoist_normalize_accepts_null_labels() -> None:
     module_path = Path(__file__).resolve().parents[2] / "mcp" / "hermes_home_mcp" / "server.py"
     spec = importlib.util.spec_from_file_location("hermes_home_mcp_test_server", module_path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    task = module.normalize_vikunja_task({"id": 1, "title": "test task", "labels": None})
+    task = module.normalize_todoist_task({"id": 1, "content": "test task", "labels": None})
 
     assert task["external_id"] == "1"
     assert task["tags"] == []
@@ -377,12 +438,13 @@ async def test_seed_tiles_are_returned_in_sort_order(tmp_path: Path) -> None:
 
         assert response.status_code == 200
         payload = response.json()
-    assert [tile["key"] for tile in payload["tiles"][:5]] == [
+    assert [tile["key"] for tile in payload["tiles"][:6]] == [
         "jobs",
         "todos",
+        "ask",
         "calendar",
         "notes",
-        "approvals",
+        "foryou",
     ]
     assert payload["tiles"][0]["front"]["line"] == "ready"
     assert payload["tiles"][0]["front"]["emoji"] == "⚙️"
@@ -391,7 +453,7 @@ async def test_seed_tiles_are_returned_in_sort_order(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
-async def test_todos_degrade_when_vikunja_configuration_is_missing(tmp_path: Path) -> None:
+async def test_todos_degrade_when_todoist_configuration_is_missing(tmp_path: Path) -> None:
     async with build_client(tmp_path) as client:
         response = await client.get("/api/todos", headers=auth_headers())
 
@@ -399,18 +461,18 @@ async def test_todos_degrade_when_vikunja_configuration_is_missing(tmp_path: Pat
         payload = response.json()
         assert payload["todos"] == []
         assert payload["configured"] is False
-        assert payload["status"]["provider"] == "vikunja"
-        assert "VIKUNJA_URL" in payload["warning"]
+        assert payload["status"]["provider"] == "todoist"
+        assert "TODOIST_TOKEN" in payload["warning"]
 
         tiles = (await client.get("/api/tiles", headers=auth_headers())).json()["tiles"]
         todos_tile = next(tile for tile in tiles if tile["key"] == "todos")
         assert todos_tile["front"]["line"] == "setup"
-        assert todos_tile["front"]["sub"] == "connect Vikunja"
+        assert todos_tile["front"]["sub"] == "connect Todoist"
 
 
 @pytest.mark.anyio
-async def test_command_creates_vikunja_todo_events_summary_and_tile_updates(tmp_path: Path, fake_vikunja: FakeVikunja) -> None:
-    async with build_client(tmp_path, vikunja=fake_vikunja) as client:
+async def test_command_creates_todoist_todo_events_summary_and_tile_updates(tmp_path: Path, fake_todoist: FakeTodoist) -> None:
+    async with build_client(tmp_path, todoist=fake_todoist) as client:
         command_response = await client.post(
             "/api/command",
             headers=auth_headers(),
@@ -431,16 +493,16 @@ async def test_command_creates_vikunja_todo_events_summary_and_tile_updates(tmp_
         assert "event: step" in event_text
         assert "reading command" in event_text
         assert "publishing page" not in event_text
-        assert "created Vikunja todo" in event_text
+        assert "created Todoist todo" in event_text
 
         stream_response = await client.get(f"/api/jobs/{job_id}/stream", headers=auth_headers())
         assert stream_response.status_code == 200
-        assert "created Vikunja todo" in stream_response.text
+        assert "created Todoist todo" in stream_response.text
         assert "publishing page" not in stream_response.text
 
         timeline_response = await client.get(f"/api/jobs/{job_id}/timeline", headers=auth_headers())
         assert timeline_response.status_code == 200
-        assert [event["text"] for event in timeline_response.json()["events"]][-1].startswith("created Vikunja todo")
+        assert [event["text"] for event in timeline_response.json()["events"]][-1].startswith("created Todoist todo")
 
         diagnostics_response = await client.get(f"/api/jobs/{job_id}/diagnostics", headers=auth_headers())
         assert diagnostics_response.status_code == 200
@@ -453,15 +515,14 @@ async def test_command_creates_vikunja_todo_events_summary_and_tile_updates(tmp_
         todos = todos_response.json()["todos"]
         assert todos[0]["title"] == "buy oat milk"
         assert todos[0]["status"] == "open"
-        assert todos[0]["provider"] == "vikunja"
+        assert todos[0]["provider"] == "todoist"
         assert todos[0]["external_id"] == "1"
         expected_due_date = (datetime.now(timezone.utc).date() + timedelta(days=1)).isoformat()
         assert todos[0]["due_at"].startswith(expected_due_date)
 
-        create_call = next(call for call in fake_vikunja.calls if call["method"] == "PUT")
-        assert create_call["path"] == f"/api/v1/projects/{fake_vikunja.default_project_id}/tasks"
-        assert create_call["body"]["title"] == "buy oat milk"
-        assert create_call["body"]["due_date"].startswith(expected_due_date)
+        create_call = next(call for call in fake_todoist.calls if call["method"] == "POST" and call["path"] == "/rest/v2/tasks")
+        assert create_call["body"]["content"] == "buy oat milk"
+        assert create_call["body"]["due_datetime"].startswith(expected_due_date)
 
         tiles_response = await client.get("/api/tiles", headers=auth_headers())
         todos_tile = next(tile for tile in tiles_response.json()["tiles"] if tile["key"] == "todos")
@@ -469,8 +530,8 @@ async def test_command_creates_vikunja_todo_events_summary_and_tile_updates(tmp_
 
 
 @pytest.mark.anyio
-async def test_page_action_completes_vikunja_todo_and_refreshes_tile(tmp_path: Path, fake_vikunja: FakeVikunja) -> None:
-    app = build_app(tmp_path, vikunja=fake_vikunja)
+async def test_page_action_completes_todoist_todo_and_refreshes_tile(tmp_path: Path, fake_todoist: FakeTodoist) -> None:
+    app = build_app(tmp_path, todoist=fake_todoist)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         command_response = await client.post(
@@ -527,8 +588,8 @@ async def test_page_action_completes_vikunja_todo_and_refreshes_tile(tmp_path: P
         assert "todos.complete" in filtered_runs[0]["summary"]
         todos = (await client.get("/api/todos", headers=auth_headers())).json()["todos"]
         assert todos[0]["status"] == "done"
-        complete_call = [call for call in fake_vikunja.calls if call["method"] == "POST" and call["path"] == "/api/v1/tasks/1"][-1]
-        assert complete_call["body"]["done"] is True
+        complete_call = [call for call in fake_todoist.calls if call["method"] == "POST" and call["path"] == "/rest/v2/tasks/1/close"][-1]
+        assert complete_call["path"] == "/rest/v2/tasks/1/close"
         tiles = (await client.get("/api/tiles", headers=auth_headers())).json()["tiles"]
         todos_tile = next(tile for tile in tiles if tile["key"] == "todos")
         assert todos_tile["front"]["count"] == 0
@@ -542,8 +603,8 @@ async def test_page_action_completes_vikunja_todo_and_refreshes_tile(tmp_path: P
 
 
 @pytest.mark.anyio
-async def test_local_todo_rows_are_not_authoritative(tmp_path: Path, fake_vikunja: FakeVikunja) -> None:
-    app = build_app(tmp_path, vikunja=fake_vikunja)
+async def test_local_todo_rows_are_not_authoritative(tmp_path: Path, fake_todoist: FakeTodoist) -> None:
+    app = build_app(tmp_path, todoist=fake_todoist)
     from app.models import Todo
 
     with app.state.session_factory() as session:
@@ -560,8 +621,8 @@ async def test_local_todo_rows_are_not_authoritative(tmp_path: Path, fake_vikunj
         assert vitals["counts"]["todos_open"] == 0
 
 
-def test_create_todo_passes_project_labels_and_priority(tmp_path: Path, fake_vikunja: FakeVikunja) -> None:
-    app = build_app(tmp_path, vikunja=fake_vikunja)
+def test_create_todo_passes_project_labels_and_priority(tmp_path: Path, fake_todoist: FakeTodoist) -> None:
+    app = build_app(tmp_path, todoist=fake_todoist)
     from app.todo_provider import create_todo
 
     with app.state.session_factory() as session:
@@ -570,23 +631,24 @@ def test_create_todo_passes_project_labels_and_priority(tmp_path: Path, fake_vik
             title="Buy oat milk",
             project_id="8",
             label_titles=["groceries", "pantry"],
-            priority=5,
+            priority=4,
         )
         session.commit()
 
-    create_call = next(call for call in fake_vikunja.calls if call["method"] == "PUT" and call["path"].endswith("/projects/8/tasks"))
-    assert create_call["body"]["priority"] == 5
+    create_call = next(call for call in fake_todoist.calls if call["method"] == "POST" and call["path"] == "/rest/v2/tasks")
+    assert create_call["body"]["project_id"] == "8"
+    assert create_call["body"]["priority"] == 4
+    assert create_call["body"]["labels"] == ["groceries", "pantry"]
     assert todo.project_id == "8"
     assert todo.project_title == "errands"
     assert todo.tags == ["groceries", "pantry"]
-    assert todo.priority == 5
-    assert any(call["path"].endswith(f"/tasks/{todo.external_id}/labels") for call in fake_vikunja.calls)
+    assert todo.priority == 4
 
 
 @pytest.mark.anyio
-async def test_todos_response_includes_projects_labels_and_priority(tmp_path: Path, fake_vikunja: FakeVikunja) -> None:
-    fake_vikunja.create_task("8", {"title": "buy oat milk", "priority": 4, "labels": [fake_vikunja.labels["3"]]})
-    async with build_client(tmp_path, vikunja=fake_vikunja) as client:
+async def test_todos_response_includes_projects_labels_and_priority(tmp_path: Path, fake_todoist: FakeTodoist) -> None:
+    fake_todoist.create_task("8", {"content": "buy oat milk", "priority": 4, "labels": [fake_todoist.labels["3"]]})
+    async with build_client(tmp_path, todoist=fake_todoist) as client:
         response = await client.get("/api/todos", headers=auth_headers())
 
     assert response.status_code == 200
@@ -596,6 +658,61 @@ async def test_todos_response_includes_projects_labels_and_priority(tmp_path: Pa
     assert payload["todos"][0]["project"] == "errands"
     assert payload["todos"][0]["tags"] == ["groceries"]
     assert payload["todos"][0]["priority"] == 4
+
+
+@pytest.mark.anyio
+async def test_saved_item_ingest_and_list(tmp_path: Path) -> None:
+    async with build_client(tmp_path) as client:
+        create = await client.post(
+            "/api/saved-items",
+            headers=auth_headers(),
+            json={"text": "hello world"},
+        )
+        assert create.status_code == 200
+        saved_item_id = create.json()["saved_item_id"]
+        assert saved_item_id
+
+        listed = await client.get("/api/saved-items", headers=auth_headers())
+        assert listed.status_code == 200
+        items = listed.json()["saved_items"]
+        match = next(item for item in items if item["id"] == saved_item_id)
+        assert match["text"] == "hello world"
+        assert match["status"] in {"new", "enriched"}
+
+
+@pytest.mark.anyio
+async def test_jobs_handoff_creates_child_job(tmp_path: Path) -> None:
+    async with build_client(tmp_path) as client:
+        profiles = (await client.get("/api/profiles", headers=auth_headers())).json()["profiles"]
+        research_profile = next(profile for profile in profiles if profile["slug"] == "research-agent")
+
+        response = await client.post(
+            "/api/jobs/handoff",
+            headers=auth_headers(),
+            json={"profile_slug": "research-agent", "command": "do research", "source_job_id": None},
+        )
+        assert response.status_code == 200
+        job_id = response.json()["job_id"]
+        assert job_id
+
+        child = (await client.get(f"/api/jobs/{job_id}", headers=auth_headers())).json()["job"]
+        assert child["profile_id"] == research_profile["id"]
+
+
+@pytest.mark.anyio
+async def test_pending_clarifications_endpoint_empty(tmp_path: Path) -> None:
+    async with build_client(tmp_path) as client:
+        response = await client.get("/api/clarifications", headers=auth_headers())
+        assert response.status_code == 200
+        assert response.json() == {"clarifications": []}
+
+
+@pytest.mark.anyio
+async def test_search_endpoint_returns_results_or_empty(tmp_path: Path) -> None:
+    async with build_client(tmp_path) as client:
+        response = await client.get("/api/search?q=test", headers=auth_headers())
+        assert response.status_code == 200
+        assert isinstance(response.json()["results"], list)
 
 
 def test_agent_environment_includes_profile_vars(monkeypatch: pytest.MonkeyPatch) -> None:

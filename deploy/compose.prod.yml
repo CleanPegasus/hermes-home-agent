@@ -17,39 +17,6 @@ services:
       retries: 20
       start_period: 10s
 
-  vikunja-postgres:
-    image: postgres:18
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: ${VIKUNJA_POSTGRES_DB:-vikunja}
-      POSTGRES_USER: ${VIKUNJA_POSTGRES_USER:-vikunja}
-      POSTGRES_PASSWORD: ${VIKUNJA_POSTGRES_PASSWORD:?VIKUNJA_POSTGRES_PASSWORD is required}
-    volumes:
-      - vikunja-postgres-data:/var/lib/postgresql
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -h localhost -U ${VIKUNJA_POSTGRES_USER:-vikunja}"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-      start_period: 30s
-
-  vikunja:
-    image: vikunja/vikunja:${VIKUNJA_IMAGE_TAG:-latest}
-    restart: unless-stopped
-    environment:
-      VIKUNJA_SERVICE_PUBLICURL: ${VIKUNJA_SERVICE_PUBLICURL:-http://vikunja:3456/}
-      VIKUNJA_SERVICE_SECRET: ${VIKUNJA_SERVICE_SECRET:?VIKUNJA_SERVICE_SECRET is required}
-      VIKUNJA_DATABASE_TYPE: postgres
-      VIKUNJA_DATABASE_HOST: vikunja-postgres
-      VIKUNJA_DATABASE_USER: ${VIKUNJA_POSTGRES_USER:-vikunja}
-      VIKUNJA_DATABASE_PASSWORD: ${VIKUNJA_POSTGRES_PASSWORD:?VIKUNJA_POSTGRES_PASSWORD is required}
-      VIKUNJA_DATABASE_DATABASE: ${VIKUNJA_POSTGRES_DB:-vikunja}
-    volumes:
-      - vikunja-files:/app/vikunja/files
-    depends_on:
-      vikunja-postgres:
-        condition: service_healthy
-
   app:
     build:
       context: ..
@@ -66,21 +33,23 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       CODEX_ENABLED: ${CODEX_ENABLED:-false}
       OBSIDIAN_VAULT_PATH: /data/obsidian-vault
-      VIKUNJA_URL: ${VIKUNJA_URL:-http://vikunja:3456}
-      VIKUNJA_TOKEN: ${VIKUNJA_TOKEN:-}
-      VIKUNJA_TOKEN_FILE: ${VIKUNJA_TOKEN_FILE:-/run/secrets/vikunja_api_token}
-      VIKUNJA_DEFAULT_PROJECT_ID: ${VIKUNJA_DEFAULT_PROJECT_ID:-}
-      VIKUNJA_PROJECT_ID: ${VIKUNJA_PROJECT_ID:-}
-      VIKUNJA_TIMEOUT_SECONDS: ${VIKUNJA_TIMEOUT_SECONDS:-10}
+      TODOIST_TOKEN: ${TODOIST_TOKEN:-}
+      TODOIST_TOKEN_FILE: ${TODOIST_TOKEN_FILE:-}
+      TODOIST_DEFAULT_PROJECT_ID: ${TODOIST_DEFAULT_PROJECT_ID:-}
+      TODOIST_TIMEOUT_SECONDS: ${TODOIST_TIMEOUT_SECONDS:-}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-openai}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-1536}
+      HERMES_SCHEDULER_ENABLED: ${HERMES_SCHEDULER_ENABLED:-true}
+      HERMES_REINDEX_HOUR: ${HERMES_REINDEX_HOUR:-3}
+      HERMES_FORYOU_INTERVAL_MINUTES: ${HERMES_FORYOU_INTERVAL_MINUTES:-60}
       PYTHONUNBUFFERED: "1"
     volumes:
       - ${OBSIDIAN_VAULT_HOST_PATH:-./data/obsidian-vault}:/data/obsidian-vault
-      - ${VIKUNJA_API_TOKEN_FILE_HOST_PATH:-./vikunja/api-token}:/run/secrets/vikunja_api_token:ro
     depends_on:
       postgres:
         condition: service_healthy
-      vikunja:
-        condition: service_started
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read()"]
       interval: 15s
@@ -120,5 +89,3 @@ services:
 
 volumes:
   postgres-data:
-  vikunja-postgres-data:
-  vikunja-files:

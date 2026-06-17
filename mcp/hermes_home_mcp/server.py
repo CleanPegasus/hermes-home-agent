@@ -47,7 +47,7 @@ except Exception:  # pragma: no cover
 
 
 DEFAULT_DATABASE_URL = "sqlite:///./hermes-home.db"
-JSON_COLUMNS = {"front", "back", "scope", "tags", "embedding", "payload", "result", "provenance", "choices", "draft"}
+JSON_COLUMNS = {"front", "back", "scope", "tags", "embedding", "payload", "result", "provenance", "choices", "draft", "entry_metadata"}
 _ENGINE: Engine | None = None
 _ENGINE_URL: str | None = None
 
@@ -127,7 +127,7 @@ SQLITE_SCHEMA = [
     CREATE TABLE IF NOT EXISTS todos (
       id TEXT PRIMARY KEY,
       external_id TEXT,
-      provider TEXT NOT NULL DEFAULT 'vikunja',
+      provider TEXT NOT NULL DEFAULT 'todoist',
       title TEXT NOT NULL,
       notes TEXT,
       due_at TEXT,
@@ -157,6 +157,7 @@ SQLITE_SCHEMA = [
       emoji TEXT,
       summary TEXT,
       profile_id TEXT,
+      parent_job_id TEXT,
       started_at TEXT,
       finished_at TEXT
     )
@@ -321,6 +322,36 @@ SQLITE_SCHEMA = [
       last_polled_at TEXT
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS index_entries (
+      id TEXT PRIMARY KEY,
+      source_type TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      title TEXT NOT NULL DEFAULT '',
+      content TEXT NOT NULL DEFAULT '',
+      content_hash TEXT,
+      embedding TEXT,
+      entry_metadata TEXT NOT NULL DEFAULT '{}',
+      indexed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS saved_items (
+      id TEXT PRIMARY KEY,
+      url TEXT,
+      title TEXT NOT NULL DEFAULT 'saved item',
+      text TEXT,
+      summary TEXT,
+      tags TEXT NOT NULL DEFAULT '[]',
+      source TEXT NOT NULL DEFAULT 'shortcut',
+      status TEXT NOT NULL DEFAULT 'new',
+      score REAL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      enriched_at TEXT,
+      surfaced_at TEXT
+    )
+    """,
 ]
 
 SEED_CATEGORIES = [
@@ -401,78 +432,68 @@ def json_expr(name: str) -> str:
     return f":{name}"
 
 
-class VikunjaMCPError(RuntimeError):
+class TodoistMCPError(RuntimeError):
     pass
+
+
+TODOIST_REST_BASE = "https://api.todoist.com/rest/v2"
+TODOIST_SYNC_BASE = "https://api.todoist.com/sync/v9"
 
 
 def vault_store() -> VaultStore:
     store = VaultStore(os.getenv("OBSIDIAN_VAULT_PATH"))
     if not store.configured():
-        raise VikunjaMCPError("OBSIDIAN_VAULT_PATH is not configured. Set it to your Obsidian vault folder to use notes.")
+        raise TodoistMCPError("OBSIDIAN_VAULT_PATH is not configured. Set it to your Obsidian vault folder to use notes.")
     return store
 
 
-def vault_error(exc: Exception) -> VikunjaMCPError:
+def vault_error(exc: Exception) -> TodoistMCPError:
     if isinstance(exc, VaultConfigurationError):
-        return VikunjaMCPError("OBSIDIAN_VAULT_PATH is not configured. Set it to your Obsidian vault folder to use notes.")
+        return TodoistMCPError("OBSIDIAN_VAULT_PATH is not configured. Set it to your Obsidian vault folder to use notes.")
     if isinstance(exc, VaultNoteNotFoundError):
-        return VikunjaMCPError("note not found")
-    return VikunjaMCPError(str(exc))
+        return TodoistMCPError("note not found")
+    return TodoistMCPError(str(exc))
 
 
-def vikunja_config() -> dict[str, Any]:
-    raw_url = os.getenv("VIKUNJA_URL", "").strip()
-    token = vikunja_token_from_env()
-    missing = []
-    if not raw_url:
-        missing.append("VIKUNJA_URL")
+def todoist_config() -> dict[str, Any]:
+    token = todoist_token_from_env()
     if not token:
-        missing.append("VIKUNJA_TOKEN or VIKUNJA_TOKEN_FILE")
-    if missing:
-        raise VikunjaMCPError(
-            f"Vikunja todo integration is not configured. Set {', '.join(missing)} to use todos."
+        raise TodoistMCPError(
+            "Todoist todo integration is not configured. Set TODOIST_TOKEN or TODOIST_TOKEN_FILE to use todos."
         )
-    default_project_id = (
-        os.getenv("VIKUNJA_DEFAULT_PROJECT_ID", "").strip()
-        or os.getenv("VIKUNJA_PROJECT_ID", "").strip()
-        or None
-    )
+    default_project_id = os.getenv("TODOIST_DEFAULT_PROJECT_ID", "").strip() or None
     return {
-        "api_url": normalize_vikunja_api_url(raw_url),
         "token": token,
         "default_project_id": default_project_id,
-        "timeout": float(os.getenv("VIKUNJA_TIMEOUT_SECONDS", "10")),
+        "timeout": float(os.getenv("TODOIST_TIMEOUT_SECONDS", "10")),
     }
 
 
-def vikunja_token_from_env() -> str:
-    token = os.getenv("VIKUNJA_TOKEN", "").strip()
+def todoist_token_from_env() -> str:
+    token = os.getenv("TODOIST_TOKEN", "").strip()
     if token:
         return token
-    token_file = os.getenv("VIKUNJA_TOKEN_FILE", "").strip()
+    token_file = os.getenv("TODOIST_TOKEN_FILE", "").strip()
     if not token_file:
         return ""
     path = Path(token_file).expanduser()
     try:
         file_token = path.read_text(encoding="utf-8").strip()
     except OSError as exc:
-        raise VikunjaMCPError(f"Could not read VIKUNJA_TOKEN_FILE {path}: {exc.strerror}") from exc
+        raise TodoistMCPError(f"Could not read TODOIST_TOKEN_FILE {path}: {exc.strerror}") from exc
     if not file_token:
-        raise VikunjaMCPError(f"VIKUNJA_TOKEN_FILE {path} is empty")
+        raise TodoistMCPError(f"TODOIST_TOKEN_FILE {path} is empty")
     return file_token
 
 
-def normalize_vikunja_api_url(raw_url: str) -> str:
-    value = raw_url.strip().rstrip("/")
-    if value.endswith("/api/v1"):
-        return value
-    if value.endswith("/api"):
-        return f"{value}/v1"
-    return f"{value}/api/v1"
-
-
-def vikunja_request(method: str, path: str, body: dict[str, Any] | None = None, params: dict[str, Any] | None = None) -> Any:
-    config = vikunja_config()
+def todoist_request(
+    method: str,
+    path: str,
+    body: dict[str, Any] | None = None,
+    params: dict[str, Any] | None = None,
+    base: str | None = None,
+) -> Any:
+    config = todoist_config()
     headers = {"accept": "application/json", "authorization": f"Bearer {config['token']}"}
     if body is not None:
         headers["content-type"] = "application/json"
@@ -480,64 +501,101 @@ def vikunja_request(method: str, path: str, body: dict[str, Any] | None = None, 
         with httpx.Client(timeout=config["timeout"]) as client:
             response = client.request(
                 method,
-                f"{config['api_url']}{path}",
+                f"{base or TODOIST_REST_BASE}{path}",
                 headers=headers,
                 json=body,
                 params=params,
             )
     except httpx.TimeoutException as exc:
-        raise VikunjaMCPError(f"Vikunja request timed out: {method} {path}") from exc
+        raise TodoistMCPError(f"Todoist request timed out: {method} {path}") from exc
     except httpx.RequestError as exc:
-        raise VikunjaMCPError(f"Vikunja request failed: {exc}") from exc
+        raise TodoistMCPError(f"Todoist request failed: {exc}") from exc
     if response.status_code >= 400:
-        raise VikunjaMCPError(f"Vikunja request failed ({response.status_code}): {vikunja_error_text(response)}")
+        raise TodoistMCPError(f"Todoist request failed ({response.status_code}): {todoist_error_text(response)}")
     if response.status_code == 204 or not response.content:
         return None
     try:
         return response.json()
     except ValueError as exc:
-        raise VikunjaMCPError("Vikunja returned invalid JSON") from exc
+        raise TodoistMCPError("Todoist returned invalid JSON") from exc
 
 
-def vikunja_error_text(response: httpx.Response) -> str:
+def todoist_error_text(response: httpx.Response) -> str:
     try:
         payload = response.json()
     except ValueError:
         return response.text.strip()[:500] or response.reason_phrase
     if isinstance(payload, dict):
-        for key in ("message", "detail", "error"):
+        for key in ("error", "message", "detail"):
             if payload.get(key):
                 return str(payload[key])
     return str(payload)[:500]
 
 
-def normalize_vikunja_task(task: dict[str, Any]) -> dict[str, Any]:
+def clamp_priority(value: Any) -> int:
+    try:
+        priority = int(value)
+    except (TypeError, ValueError):
+        return 1
+    return max(1, min(4, priority))
+
+
+def normalize_todoist_task(task: dict[str, Any]) -> dict[str, Any]:
     external_id = str(task.get("id") or "").strip()
     if not external_id:
-        raise VikunjaMCPError("Vikunja task is missing an id")
+        raise TodoistMCPError("Todoist task is missing an id")
     project_id = optional_text(task.get("project_id"))
     labels = task.get("labels")
     if not isinstance(labels, list):
         labels = []
+    due = task.get("due")
+    due_at = None
+    if isinstance(due, dict):
+        due_at = clean_todoist_datetime(due.get("datetime") or due.get("date"))
+    created_at = clean_todoist_datetime(task.get("created_at"))
     return {
         "external_id": external_id,
-        "provider": "vikunja",
-        "title": str(task.get("title") or "untitled task").strip() or "untitled task",
+        "provider": "todoist",
+        "title": str(task.get("content") or "untitled task").strip() or "untitled task",
         "notes": optional_text(task.get("description")),
-        "due_at": clean_vikunja_datetime(task.get("due_date")),
-        "scheduled_for": clean_vikunja_datetime(task.get("start_date")),
-        "tags": [label["title"] for label in labels if isinstance(label, dict) and label.get("title")],
+        "due_at": due_at,
+        "scheduled_for": None,
+        "tags": [str(label).strip() for label in labels if str(label).strip()],
         "priority": optional_int(task.get("priority")),
-        "status": "done" if bool(task.get("done")) else "open",
+        "status": "done" if bool(task.get("is_completed")) else "open",
         "project_id": project_id,
         "project_title": f"project {project_id}" if project_id else None,
-        "created_at": clean_vikunja_datetime(task.get("created")),
-        "updated_at": clean_vikunja_datetime(task.get("updated")),
-        "completed_at": clean_vikunja_datetime(task.get("done_at")),
+        "created_at": created_at,
+        "updated_at": created_at,
+        "completed_at": None,
     }
 
 
-def clean_vikunja_datetime(value: Any) -> str | None:
+def normalize_todoist_completed_task(item: dict[str, Any]) -> dict[str, Any]:
+    external_id = str(item.get("task_id") or item.get("id") or "").strip()
+    if not external_id:
+        raise TodoistMCPError("Todoist completed item is missing a task id")
+    project_id = optional_text(item.get("project_id"))
+    completed_at = clean_todoist_datetime(item.get("completed_at"))
+    return {
+        "external_id": external_id,
+        "provider": "todoist",
+        "title": str(item.get("content") or "untitled task").strip() or "untitled task",
+        "notes": None,
+        "due_at": None,
+        "scheduled_for": None,
+        "tags": [],
+        "priority": None,
+        "status": "done",
+        "project_id": project_id,
+        "project_title": f"project {project_id}" if project_id else None,
+        "created_at": None,
+        "updated_at": completed_at,
+        "completed_at": completed_at,
+    }
+
+
+def clean_todoist_datetime(value: Any) -> str | None:
     text_value = optional_text(value)
     if not text_value or text_value.startswith("0001-01-01"):
         return None
@@ -560,59 +618,64 @@ def optional_int(value: Any) -> int | None:
         return None
 
 
-def vikunja_projects() -> list[dict[str, Any]]:
-    payload = vikunja_request("GET", "/projects")
+def todoist_projects() -> list[dict[str, Any]]:
+    payload = todoist_request("GET", "/projects")
     if not isinstance(payload, list):
-        raise VikunjaMCPError("Vikunja returned an unexpected projects payload")
+        raise TodoistMCPError("Todoist returned an unexpected projects payload")
     return [project for project in payload if isinstance(project, dict)]
 
 
-def vikunja_labels() -> list[dict[str, Any]]:
-    payload = vikunja_request("GET", "/labels")
+def todoist_labels() -> list[dict[str, Any]]:
+    payload = todoist_request("GET", "/labels")
     if not isinstance(payload, list):
-        raise VikunjaMCPError("Vikunja returned an unexpected labels payload")
+        raise TodoistMCPError("Todoist returned an unexpected labels payload")
     return [label for label in payload if isinstance(label, dict)]
 
 
-def ensure_vikunja_label(title: str) -> dict[str, Any]:
-    normalized = title.strip().lower()
-    for label in vikunja_labels():
-        if str(label.get("title", "")).strip().lower() == normalized:
+def ensure_todoist_label(name: str) -> dict[str, Any]:
+    normalized = name.strip()
+    if not normalized:
+        raise TodoistMCPError("label name is required")
+    for label in todoist_labels():
+        if str(label.get("name", "")).strip().lower() == normalized.lower():
             return label
-    payload = vikunja_request("PUT", "/labels", body={"title": normalized})
+    payload = todoist_request("POST", "/labels", body={"name": normalized})
     if not isinstance(payload, dict):
-        raise VikunjaMCPError("Vikunja returned an unexpected label payload")
+        raise TodoistMCPError("Todoist returned an unexpected label payload")
     return payload
 
 
-def set_vikunja_task_labels(task_id: str, label_ids: list[str]) -> None:
-    for label_id in label_ids:
-        try:
-            vikunja_request("PUT", f"/tasks/{task_id}/labels", body={"label_id": label_id})
-        except VikunjaMCPError:
-            continue
+def set_todoist_task_labels(task_id: str, label_names: list[str]) -> dict[str, Any]:
+    # Todoist v2 stores labels as plain names directly on the task.
+    return todoist_request("POST", f"/tasks/{task_id}", body={"labels": label_names})
 
 
-def refresh_vikunja_todo_cache() -> list[dict[str, Any]]:
+def refresh_todoist_todo_cache() -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for page in range(1, 6):
-        payload = vikunja_request(
-            "GET",
-            "/tasks",
-            params={"page": page, "per_page": 200, "sort_by": "updated", "order_by": "desc"},
-        )
-        if not isinstance(payload, list):
-            raise VikunjaMCPError("Vikunja returned an unexpected tasks payload")
-        for item in payload:
+    active = todoist_request("GET", "/tasks")
+    if not isinstance(active, list):
+        raise TodoistMCPError("Todoist returned an unexpected tasks payload")
+    for item in active:
+        if isinstance(item, dict):
+            row = upsert_todoist_todo_cache(normalize_todoist_task(item))
+            rows.append(row)
+            seen.add(str(row["external_id"]))
+    completed = todoist_request(
+        "GET",
+        "/completed/get_all",
+        params={"limit": 200},
+        base=TODOIST_SYNC_BASE,
+    )
+    items = completed.get("items") if isinstance(completed, dict) else None
+    if isinstance(items, list):
+        for item in items:
             if isinstance(item, dict):
-                row = upsert_vikunja_todo_cache(normalize_vikunja_task(item))
+                row = upsert_todoist_todo_cache(normalize_todoist_completed_task(item))
                 rows.append(row)
                 seen.add(str(row["external_id"]))
-        if len(payload) < 200:
-            break
-    for row in fetch_all("SELECT * FROM todos WHERE provider = 'vikunja' AND external_id IS NOT NULL"):
-        if row["external_id"] not in seen and row["status"] != "dropped":
+    for row in fetch_all("SELECT * FROM todos WHERE provider = 'todoist' AND external_id IS NOT NULL"):
+        if row["external_id"] not in seen and row["status"] == "open":
             execute(
                 "UPDATE todos SET status = 'dropped', completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = :id",
                 {"id": row["id"]},
@@ -620,9 +683,9 @@ def refresh_vikunja_todo_cache() -> list[dict[str, Any]]:
     return rows
 
 
-def upsert_vikunja_todo_cache(task: dict[str, Any], source: str | None = None) -> dict[str, Any]:
+def upsert_todoist_todo_cache(task: dict[str, Any], source: str | None = None) -> dict[str, Any]:
     existing = fetch_one(
-        "SELECT * FROM todos WHERE provider = 'vikunja' AND external_id = :external_id",
+        "SELECT * FROM todos WHERE provider = 'todoist' AND external_id = :external_id",
         {"external_id": task["external_id"]},
     )
     params = {
@@ -659,7 +722,7 @@ def upsert_vikunja_todo_cache(task: dict[str, Any], source: str | None = None) -
           priority, status, source, project_id, project_title, created_at, updated_at, completed_at
         )
         VALUES (
-          :id, :external_id, 'vikunja', :title, :notes, :due_at, :scheduled_for, :tags_value,
+          :id, :external_id, 'todoist', :title, :notes, :due_at, :scheduled_for, :tags_value,
           :priority, :status, :source, :project_id, :project_title,
           COALESCE(:created_at, CURRENT_TIMESTAMP), COALESCE(:updated_at, CURRENT_TIMESTAMP), :completed_at
         )
@@ -669,18 +732,18 @@ def upsert_vikunja_todo_cache(task: dict[str, Any], source: str | None = None) -
     )
 
 
-def resolve_vikunja_todo(todo_id: str) -> dict[str, Any]:
+def resolve_todoist_todo(todo_id: str) -> dict[str, Any]:
     row = fetch_one(
         """
         SELECT * FROM todos
-        WHERE provider = 'vikunja'
+        WHERE provider = 'todoist'
           AND external_id IS NOT NULL
           AND (id = :todo_id OR external_id = :todo_id)
         """,
         {"todo_id": todo_id},
     )
     if row is None:
-        raise VikunjaMCPError("todo not found")
+        raise TodoistMCPError("todo not found")
     return row
 
 
@@ -701,13 +764,14 @@ def ensure_sqlite_schema(connection: Any) -> None:
     ensure_sqlite_column(connection, "jobs", "emoji", "TEXT")
     ensure_sqlite_column(connection, "jobs", "summary", "TEXT")
     ensure_sqlite_column(connection, "jobs", "profile_id", "TEXT")
+    ensure_sqlite_column(connection, "jobs", "parent_job_id", "TEXT")
     ensure_sqlite_column(connection, "clarifications", "follow_up_job_id", "TEXT")
     ensure_sqlite_column(connection, "clarifications", "answered_at", "TEXT")
     ensure_sqlite_column(connection, "action_runs", "source_job_id", "TEXT")
     ensure_sqlite_column(connection, "action_runs", "source_page_id", "TEXT")
     ensure_sqlite_column(connection, "codex_runs", "effort", "TEXT NOT NULL DEFAULT 'xhigh'")
     ensure_sqlite_column(connection, "todos", "external_id", "TEXT")
-    ensure_sqlite_column(connection, "todos", "provider", "TEXT NOT NULL DEFAULT 'vikunja'")
+    ensure_sqlite_column(connection, "todos", "provider", "TEXT NOT NULL DEFAULT 'todoist'")
     ensure_sqlite_column(connection, "todos", "project_id", "TEXT")
     ensure_sqlite_column(connection, "todos", "project_title", "TEXT")
     ensure_sqlite_column(connection, "todos", "priority", "INTEGER")
@@ -879,9 +943,9 @@ async def categories_create(name: str, color: str = "#6A00FF", slug: str | None 
 
 
 async def todos_query(status: str | None = None, limit: int = 50) -> dict[str, Any]:
-    refresh_vikunja_todo_cache()
+    refresh_todoist_todo_cache()
     params: dict[str, Any] = {"limit": max(1, min(limit, 200))}
-    where = "WHERE provider = 'vikunja' AND external_id IS NOT NULL AND status != 'dropped'"
+    where = "WHERE provider = 'todoist' AND external_id IS NOT NULL AND status != 'dropped'"
     if status:
         where += " AND status = :status"
         params["status"] = status
@@ -892,8 +956,8 @@ async def todos_query(status: str | None = None, limit: int = 50) -> dict[str, A
 
 async def todos_projects_list() -> dict[str, Any]:
     projects = [
-        {"id": str(project.get("id")), "title": str(project.get("title") or ""), "hex_color": str(project.get("hex_color") or "")}
-        for project in vikunja_projects()
+        {"id": str(project.get("id")), "title": str(project.get("name") or ""), "hex_color": str(project.get("color") or "")}
+        for project in todoist_projects()
         if project.get("id") is not None
     ]
     await safe_log(f"todos_projects_list returned {len(projects)} projects")
@@ -902,8 +966,8 @@ async def todos_projects_list() -> dict[str, Any]:
 
 async def todos_labels_list() -> dict[str, Any]:
     labels = [
-        {"id": str(label.get("id")), "title": str(label.get("title") or ""), "hex_color": str(label.get("hex_color") or "")}
-        for label in vikunja_labels()
+        {"id": str(label.get("id")), "title": str(label.get("name") or ""), "hex_color": str(label.get("color") or "")}
+        for label in todoist_labels()
         if label.get("id") is not None
     ]
     await safe_log(f"todos_labels_list returned {len(labels)} labels")
@@ -921,88 +985,88 @@ async def todos_create(
     priority: int | None = None,
     source: str = "agent",
 ) -> dict[str, Any]:
-    config = vikunja_config()
+    config = todoist_config()
     target_project_id = project_id or config.get("default_project_id")
-    if not target_project_id:
-        raise VikunjaMCPError("Vikunja todo creation requires VIKUNJA_DEFAULT_PROJECT_ID or VIKUNJA_PROJECT_ID.")
-    payload: dict[str, Any] = {"title": title.strip().lower()}
+    payload: dict[str, Any] = {"content": title.strip().lower()}
+    if target_project_id:
+        payload["project_id"] = target_project_id
     if notes:
         payload["description"] = notes
     if due_at:
-        payload["due_date"] = due_at
-    if scheduled_for:
-        payload["start_date"] = scheduled_for
+        payload["due_datetime"] = due_at
     if priority is not None:
-        payload["priority"] = priority
-    task = vikunja_request("PUT", f"/projects/{target_project_id}/tasks", body=payload)
-    if not isinstance(task, dict):
-        raise VikunjaMCPError("Vikunja returned an unexpected create payload")
+        payload["priority"] = clamp_priority(priority)
     label_titles = labels if labels is not None else tags
     if label_titles:
-        ensured_labels = [ensure_vikunja_label(str(label)) for label in label_titles]
-        set_vikunja_task_labels(str(task.get("id")), [str(label.get("id")) for label in ensured_labels if label.get("id") is not None])
-        task["labels"] = ensured_labels
-    normalized = normalize_vikunja_task(task)
-    row = upsert_vikunja_todo_cache(normalized, source=source)
-    refresh_vikunja_todo_cache()
+        ensured = [ensure_todoist_label(str(label)) for label in label_titles]
+        payload["labels"] = [str(label.get("name")) for label in ensured if label.get("name")]
+    task = todoist_request("POST", "/tasks", body=payload)
+    if not isinstance(task, dict):
+        raise TodoistMCPError("Todoist returned an unexpected create payload")
+    normalized = normalize_todoist_task(task)
+    row = upsert_todoist_todo_cache(normalized, source=source)
+    refresh_todoist_todo_cache()
     await refresh_todos_tile()
-    await safe_log(f"todos_create created Vikunja task {row['external_id']}")
+    await safe_log(f"todos_create created Todoist task {row['external_id']}")
     return {"todo": row}
 
 
 async def todos_update(todo_id: str, **changes: Any) -> dict[str, Any]:
-    row = resolve_vikunja_todo(todo_id)
+    row = resolve_todoist_todo(todo_id)
     payload: dict[str, Any] = {}
     if changes.get("title") is not None:
-        payload["title"] = str(changes["title"]).strip().lower()
+        payload["content"] = str(changes["title"]).strip().lower()
     if "notes" in changes:
         payload["description"] = changes["notes"]
     if "due_at" in changes:
-        payload["due_date"] = changes["due_at"]
-    if "scheduled_for" in changes:
-        payload["start_date"] = changes["scheduled_for"]
-    if "priority" in changes:
-        payload["priority"] = changes["priority"]
-    if "project_id" in changes:
-        payload["project_id"] = changes["project_id"]
-    if changes.get("status") == "done":
-        payload["done"] = True
-    if changes.get("status") == "open":
-        payload["done"] = False
-        payload["done_at"] = None
-    if not payload:
-        raise ValueError("no supported todo changes provided")
-    existing = vikunja_request("GET", f"/tasks/{row['external_id']}")
-    if not isinstance(existing, dict):
-        raise VikunjaMCPError("Vikunja returned an unexpected task payload")
-    task = vikunja_request("POST", f"/tasks/{row['external_id']}", body={**existing, **payload})
-    if not isinstance(task, dict):
-        raise VikunjaMCPError("Vikunja returned an unexpected update payload")
+        if changes["due_at"]:
+            payload["due_datetime"] = changes["due_at"]
+        else:
+            payload["due_string"] = "no date"
+    if "priority" in changes and changes["priority"] is not None:
+        payload["priority"] = clamp_priority(changes["priority"])
     labels = changes.get("labels")
     if isinstance(labels, list):
-        ensured_labels = [ensure_vikunja_label(str(label)) for label in labels]
-        set_vikunja_task_labels(str(row["external_id"]), [str(label.get("id")) for label in ensured_labels if label.get("id") is not None])
-        task["labels"] = ensured_labels
-    row = upsert_vikunja_todo_cache(normalize_vikunja_task(task))
-    refresh_vikunja_todo_cache()
+        ensured = [ensure_todoist_label(str(label)) for label in labels]
+        payload["labels"] = [str(label.get("name")) for label in ensured if label.get("name")]
+    status_change = changes.get("status")
+    if not payload and status_change not in {"done", "open"}:
+        raise ValueError("no supported todo changes provided")
+    if payload:
+        task = todoist_request("POST", f"/tasks/{row['external_id']}", body=payload)
+        if task is not None and not isinstance(task, dict):
+            raise TodoistMCPError("Todoist returned an unexpected update payload")
+    if status_change == "done":
+        todoist_request("POST", f"/tasks/{row['external_id']}/close")
+        execute(
+            "UPDATE todos SET status = 'done', completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = :id",
+            {"id": row["id"]},
+        )
+    elif status_change == "open":
+        todoist_request("POST", f"/tasks/{row['external_id']}/reopen")
+        execute(
+            "UPDATE todos SET status = 'open', completed_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = :id",
+            {"id": row["id"]},
+        )
+    refresh_todoist_todo_cache()
     await refresh_todos_tile()
     await safe_log(f"todos_update updated {todo_id}")
-    return {"todo": row}
+    updated = fetch_one("SELECT * FROM todos WHERE id = :id", {"id": row["id"]}) or row
+    return {"todo": updated}
 
 
 async def todos_complete(todo_id: str) -> dict[str, Any]:
-    row = resolve_vikunja_todo(todo_id)
-    existing = vikunja_request("GET", f"/tasks/{row['external_id']}")
-    if not isinstance(existing, dict):
-        raise VikunjaMCPError("Vikunja returned an unexpected task payload")
-    task = vikunja_request("POST", f"/tasks/{row['external_id']}", body={**existing, "done": True})
-    if not isinstance(task, dict):
-        raise VikunjaMCPError("Vikunja returned an unexpected update payload")
-    row = upsert_vikunja_todo_cache(normalize_vikunja_task(task))
-    refresh_vikunja_todo_cache()
+    row = resolve_todoist_todo(todo_id)
+    todoist_request("POST", f"/tasks/{row['external_id']}/close")
+    execute(
+        "UPDATE todos SET status = 'done', completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = :id",
+        {"id": row["id"]},
+    )
+    refresh_todoist_todo_cache()
     await refresh_todos_tile()
-    await safe_log(f"todos_complete completed Vikunja task {row['external_id']}")
-    return {"todo": row}
+    await safe_log(f"todos_complete completed Todoist task {row['external_id']}")
+    updated = fetch_one("SELECT * FROM todos WHERE id = :id", {"id": row["id"]}) or row
+    return {"todo": updated}
 
 
 async def notes_list(category_slug: str | None = None, limit: int = 50) -> dict[str, Any]:
@@ -1096,19 +1160,19 @@ async def tiles_update(
 
 
 async def refresh_todos_tile() -> dict[str, Any]:
-    refresh_vikunja_todo_cache()
+    refresh_todoist_todo_cache()
     count = int((
         fetch_one(
             """
             SELECT COUNT(*) AS count FROM todos
-            WHERE provider = 'vikunja' AND external_id IS NOT NULL AND status = 'open'
+            WHERE provider = 'todoist' AND external_id IS NOT NULL AND status = 'open'
             """
         ) or {"count": 0}
     )["count"])
     next_todo = fetch_one(
         """
         SELECT title FROM todos
-        WHERE provider = 'vikunja' AND external_id IS NOT NULL AND status = 'open'
+        WHERE provider = 'todoist' AND external_id IS NOT NULL AND status = 'open'
         ORDER BY created_at
         LIMIT 1
         """
@@ -1116,7 +1180,7 @@ async def refresh_todos_tile() -> dict[str, Any]:
     last_done = fetch_one(
         """
         SELECT title FROM todos
-        WHERE provider = 'vikunja' AND external_id IS NOT NULL AND status = 'done'
+        WHERE provider = 'todoist' AND external_id IS NOT NULL AND status = 'done'
         ORDER BY completed_at DESC, updated_at DESC
         LIMIT 1
         """
@@ -1192,10 +1256,10 @@ async def clarifications_request(
 ) -> dict[str, Any]:
     job_id = source_job_id or current_job_id()
     if not job_id:
-        raise VikunjaMCPError("clarifications_request requires source_job_id or HERMES_HOME_JOB_ID")
+        raise TodoistMCPError("clarifications_request requires source_job_id or HERMES_HOME_JOB_ID")
     clean_question = " ".join(question.strip().split())
     if not clean_question:
-        raise VikunjaMCPError("clarification question must not be blank")
+        raise TodoistMCPError("clarification question must not be blank")
     clean_choices: list[str] = []
     for choice in choices or []:
         value = " ".join(str(choice).strip().split())
@@ -1271,10 +1335,10 @@ async def calendar_update_event(event_id: str, changes: dict[str, Any], calendar
 async def job_set_summary(emoji: str, summary: str, job_id: str | None = None) -> dict[str, Any]:
     target_job_id = job_id or current_job_id()
     if not target_job_id:
-        raise VikunjaMCPError("job_set_summary requires job_id or HERMES_HOME_JOB_ID")
+        raise TodoistMCPError("job_set_summary requires job_id or HERMES_HOME_JOB_ID")
     clean_emoji = emoji.strip()
     if not clean_emoji or len(clean_emoji) > 8:
-        raise VikunjaMCPError("emoji must be a single short emoji")
+        raise TodoistMCPError("emoji must be a single short emoji")
     clean_summary = " ".join(summary.strip().split())[:140]
     execute(
         """
@@ -1293,22 +1357,18 @@ async def job_set_summary(emoji: str, summary: str, job_id: str | None = None) -
 
 
 async def health() -> dict[str, Any]:
-    raw_url = os.getenv("VIKUNJA_URL", "").strip()
     token = ""
     configuration_error = None
     try:
-        token = vikunja_token_from_env()
-    except VikunjaMCPError as exc:
+        token = todoist_token_from_env()
+    except TodoistMCPError as exc:
         configuration_error = str(exc)
     todos_status = {
-        "provider": "vikunja",
-        "configured": bool(raw_url and token),
-        "url": normalize_vikunja_api_url(raw_url) if raw_url else None,
-        "default_project_configured": bool(
-            os.getenv("VIKUNJA_DEFAULT_PROJECT_ID", "").strip()
-            or os.getenv("VIKUNJA_PROJECT_ID", "").strip()
-        ),
-        "token_file_configured": bool(os.getenv("VIKUNJA_TOKEN_FILE", "").strip()),
+        "provider": "todoist",
+        "configured": bool(token),
+        "url": TODOIST_REST_BASE,
+        "default_project_configured": bool(os.getenv("TODOIST_DEFAULT_PROJECT_ID", "").strip()),
+        "token_file_configured": bool(os.getenv("TODOIST_TOKEN_FILE", "").strip()),
     }
     if configuration_error:
         todos_status["configuration_error"] = configuration_error
@@ -1322,8 +1382,58 @@ async def health() -> dict[str, Any]:
     }
 
 
+def home_api_base() -> str:
+    return os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/") or "http://127.0.0.1:8000"
+
+
+def home_api_request(method: str, path: str, body: dict[str, Any] | None = None, params: dict[str, Any] | None = None) -> Any:
+    token = os.getenv("HOME_API_TOKEN", "dev-token")
+    headers = {"accept": "application/json", "authorization": f"Bearer {token}"}
+    if body is not None:
+        headers["content-type"] = "application/json"
+    try:
+        with httpx.Client(timeout=float(os.getenv("HOME_API_TIMEOUT_SECONDS", "20"))) as client:
+            response = client.request(method, f"{home_api_base()}{path}", headers=headers, json=body, params=params)
+    except httpx.RequestError as exc:
+        raise TodoistMCPError(f"home API request failed: {exc}") from exc
+    if response.status_code >= 400:
+        raise TodoistMCPError(f"home API request failed ({response.status_code}): {response.text[:300]}")
+    if response.status_code == 204 or not response.content:
+        return None
+    return response.json()
+
+
+async def jobs_handoff(profile_slug: str, command: str) -> dict[str, Any]:
+    """Route the current command to another agent profile (research-agent, coding-agent, etc.).
+
+    Spawns a fresh job under the chosen profile and returns its job_id. Use this from the
+    router when a command needs real downstream work rather than a todo or note.
+    """
+    payload = home_api_request(
+        "POST",
+        "/api/jobs/handoff",
+        body={"profile_slug": profile_slug, "command": command, "source_job_id": current_job_id()},
+    )
+    await safe_log(f"jobs_handoff routed to {profile_slug}")
+    return payload or {}
+
+
+async def memory_search(query: str, source_types: str | None = None, limit: int = 10) -> dict[str, Any]:
+    """Semantic search across indexed notes, past jobs/conversations, todos, and saved items.
+
+    source_types is an optional comma-separated filter (e.g. "note,job"). Returns ranked results.
+    """
+    params: dict[str, Any] = {"q": query, "limit": limit}
+    if source_types:
+        params["types"] = source_types
+    payload = home_api_request("GET", "/api/search", params=params)
+    return payload or {"results": []}
+
+
 TOOLS = [
     health,
+    jobs_handoff,
+    memory_search,
     categories_list,
     categories_create,
     todos_create,

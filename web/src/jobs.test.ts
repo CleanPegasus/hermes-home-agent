@@ -17,6 +17,7 @@ function job(status: Job["status"], extra: Partial<Job> = {}): Job {
     summary: null,
     profile_id: null,
     profile: null,
+    parent_job_id: null,
     started_at: null,
     finished_at: null,
     ...extra

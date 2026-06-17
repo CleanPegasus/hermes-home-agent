@@ -19,6 +19,7 @@ function job(id: string, command: string, extra: Partial<Job> = {}): Job {
     summary: command,
     profile_id: null,
     profile: null,
+    parent_job_id: null,
     ...extra
   };
 }

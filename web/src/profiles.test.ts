@@ -29,6 +29,7 @@ function job(extra: Partial<Job> = {}): Job {
     summary: "wrote tests",
     profile_id: profile.id,
     profile: { id: profile.id, name: profile.name, emoji: profile.emoji, color: profile.color },
+    parent_job_id: null,
     started_at: "2026-06-12T08:00:00Z",
     finished_at: "2026-06-12T08:01:00Z",
     ...extra

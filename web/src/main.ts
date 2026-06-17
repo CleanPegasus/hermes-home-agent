@@ -17,6 +17,8 @@ import { renderApprovalDetail, renderApprovals } from "./approvals";
 import { renderCodexRunDetail, renderCodexSurface } from "./codex";
 import { renderHistory } from "./history";
 import { renderJobDetail, renderJobsList, renderWorkingScreen, updateStepLog, waitForJob } from "./jobs";
+import { renderAskSurface } from "./ask";
+import { renderForYouSurface } from "./foryou";
 import { renderNoteDetail, renderNotes } from "./notes";
 import { renderGeneratedPage } from "./pages";
 import { renderProfileEditor, renderProfileFocus, renderProfilesPage } from "./profiles";
@@ -312,6 +314,24 @@ async function openTile(key: string): Promise<void> {
       reject: (approvalId) => void decideApproval(approvalId, "reject"),
       openJob: (jobId) => visit(`/job/${encodeURIComponent(jobId)}`),
       openApproval: (approvalId) => visit(`/approval/${encodeURIComponent(approvalId)}`)
+    })));
+    return;
+  }
+  if (key === "ask") {
+    const { clarifications } = await api.getPendingClarifications();
+    setScreen(shell("ask", renderAskSurface(clarifications, {
+      answer: (clarificationId, answer) => void answerClarification(clarificationId, answer),
+      openJob: (jobId) => visit(`/job/${encodeURIComponent(jobId)}`)
+    })));
+    return;
+  }
+  if (key === "foryou") {
+    const { saved_items } = await api.getSavedItems();
+    setScreen(shell("foryou", renderForYouSurface(saved_items, {
+      archive: async (savedItemId) => {
+        await api.archiveSavedItem(savedItemId);
+        await openTile("foryou");
+      }
     })));
     return;
   }
